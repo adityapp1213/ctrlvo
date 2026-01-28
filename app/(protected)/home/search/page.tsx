@@ -1,0 +1,263 @@
+import { auth } from "@clerk/nextjs/server";
+import { redirect } from "next/navigation";
+import { AppSidebar } from "@/components/ui/sidebar";
+import { Header } from "@/components/ui/header-1";
+import { detectIntent } from "@/app/lib/ai/genai";
+import { webSearch, imageSearch, summarizeItems } from "@/app/lib/ai/search";
+import { youtubeSearch, YouTubeVideo } from "@/app/lib/ai/youtube";
+import { cookies, headers } from "next/headers";
+import { logUserRequest } from "@/lib/supabase-server";
+import { SearchConversationShell } from "./ai-input-footer";
+import { fetchWeatherForCity } from "@/app/lib/weather";
+
+type WeatherType = "clear" | "clouds" | "rain" | "snow" | "thunderstorm" | "mist" | "unknown";
+type WeatherData = {
+  city: string;
+  temperature: number;
+  weatherType: WeatherType;
+  dateTime: string;
+  isDay: boolean;
+};
+type WeatherItem = {
+  city: string;
+  latitude?: number;
+  longitude?: number;
+  data?: WeatherData | null;
+  error?: string | null;
+};
+
+function mapWeatherType(condition: string): WeatherType {
+  const main = (condition || "").toLowerCase();
+  if (main.includes("clear")) return "clear";
+  if (main.includes("cloud")) return "clouds";
+  if (main.includes("rain") || main.includes("drizzle")) return "rain";
+  if (main.includes("snow")) return "snow";
+  if (main.includes("thunder")) return "thunderstorm";
+  if (main.includes("mist") || main.includes("fog") || main.includes("haze")) return "mist";
+  return "unknown";
+}
+
+function extractLocationsFromQuery(q: string): string[] {
+  const trimmed = (q || "").trim();
+  if (!trimmed) return [];
+  const lowered = trimmed.toLowerCase();
+  const parts: string[] = [];
+  const inIdx = lowered.indexOf(" in ");
+  const forIdx = lowered.indexOf(" for ");
+  const atIdx = lowered.indexOf(" at ");
+  let tail = "";
+  if (inIdx >= 0) tail = trimmed.slice(inIdx + 4);
+  else if (forIdx >= 0) tail = trimmed.slice(forIdx + 5);
+  else if (atIdx >= 0) tail = trimmed.slice(atIdx + 4);
+  if (tail) {
+    tail.split(/,| and /i).map((x) => x.trim()).filter(Boolean).forEach((t) => parts.push(t));
+  }
+  if (!parts.length) {
+    // fall back to entire query as single location token if it looks like a place name (no digits)
+    if (!/\d/.test(trimmed)) parts.push(trimmed);
+  }
+  // normalize duplicates
+  return Array.from(new Set(parts)).slice(0, 4);
+}
+
+export default async function SearchPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string; tab?: string; chatId?: string }>;
+}) {
+  const { userId } = await auth();
+  if (!userId) redirect("/");
+  
+  const resolvedSearchParams = await searchParams;
+  const q = (resolvedSearchParams?.q ?? "").toString();
+  const tab = (resolvedSearchParams?.tab ?? "results").toString();
+  const chatId = resolvedSearchParams?.chatId?.toString();
+  const jar = await cookies();
+  const aiProvider = jar.get("ai_provider")?.value === "gemini" ? "gemini" : "groq";
+  const hasQuery = q.trim().length > 0;
+  let shouldShowTabs = false;
+  let searchQuery = q;
+
+  let overallSummaryLines: string[] = [];
+  let webItems: { link: string; title: string; summaryLines: string[]; imageUrl?: string }[] = [];
+  let mediaItems: { src: string; alt?: string }[] = [];
+  let isWeatherQuery = false;
+  let weatherItems: WeatherItem[] = [];
+  let youtubeItems: YouTubeVideo[] = [];
+  let mapLocation: string | undefined;
+
+  // Only perform server-side search if we don't have a chatId (meaning it's a new search)
+  // or if we want to force refresh (maybe explicit refresh button later, but for now obey chatId)
+  if (hasQuery && !chatId) {
+    const rawCtx = jar.get("ai_ctx")?.value ?? "[]";
+    let ctx: string[] = [];
+    try {
+      const parsed = JSON.parse(rawCtx);
+      if (Array.isArray(parsed)) ctx = parsed.map((x) => String(x)).filter(Boolean);
+    } catch {
+      ctx = [];
+    }
+    const result = await detectIntent(q, ctx, aiProvider);
+    shouldShowTabs = result.shouldShowTabs;
+    searchQuery = result.searchQuery ?? q;
+    overallSummaryLines = result.overallSummaryLines;
+    mapLocation = result.mapLocation;
+    const lower = searchQuery.toLowerCase();
+    isWeatherQuery = /(weather|forecast|temperature|rain|snow|thunder|wind|humidity)\b/.test(lower);
+    
+    // Check for YouTube intent
+    if (result.youtubeQuery) {
+       youtubeItems = await youtubeSearch(result.youtubeQuery);
+    }
+
+    const nextCtx = [...ctx, q].slice(-5);
+    try {
+      jar.set("ai_ctx", JSON.stringify(nextCtx), { path: "/", httpOnly: true });
+    } catch {}
+  }
+
+  // Determine active tab - prioritize videos if we have youtube items and no explicit tab
+  const activeTab = resolvedSearchParams?.tab ? tab : (mapLocation ? "map" : (youtubeItems.length > 0 ? "videos" : tab));
+
+  const shouldPrefetchTabs =
+    hasQuery &&
+    shouldShowTabs &&
+    !chatId &&
+    !isWeatherQuery &&
+    youtubeItems.length === 0;
+
+  if (shouldPrefetchTabs) {
+    const [rawItems, images] = await Promise.all([
+      webSearch(searchQuery),
+      imageSearch(searchQuery),
+    ]);
+
+    mediaItems = images;
+
+    if (rawItems.length > 0) {
+      const s = await summarizeItems(rawItems, searchQuery, aiProvider);
+      overallSummaryLines = s.overallSummaryLines.length
+        ? s.overallSummaryLines
+        : overallSummaryLines;
+      webItems = rawItems.map((it, idx) => {
+        const found = s.summaries.find((x) => x.index === idx);
+        const lines =
+          Array.isArray(found?.summary_lines) && found.summary_lines.length
+            ? found.summary_lines.slice(0, 3)
+            : [it.snippet || ""].filter(Boolean).slice(0, 1);
+        const normalized = [lines[0] ?? "", lines[1] ?? "", lines[2] ?? ""];
+        return {
+          link: it.link,
+          title: it.title,
+          summaryLines: normalized,
+          imageUrl: it.imageUrl,
+        };
+      });
+    } else if (!overallSummaryLines.length) {
+      overallSummaryLines = ["No results found.", ""];
+    }
+  } else if (hasQuery && !chatId && shouldShowTabs) {
+    if (activeTab === "results") {
+      const rawItems = await webSearch(searchQuery);
+      if (rawItems.length > 0) {
+        const s = await summarizeItems(rawItems, searchQuery, aiProvider);
+        overallSummaryLines = s.overallSummaryLines.length
+          ? s.overallSummaryLines
+          : overallSummaryLines;
+        webItems = rawItems.map((it, idx) => {
+          const found = s.summaries.find((x) => x.index === idx);
+          const lines =
+            Array.isArray(found?.summary_lines) && found.summary_lines.length
+              ? found.summary_lines.slice(0, 3)
+              : [it.snippet || ""].filter(Boolean).slice(0, 1);
+          const normalized = [lines[0] ?? "", lines[1] ?? "", lines[2] ?? ""];
+          return {
+            link: it.link,
+            title: it.title,
+            summaryLines: normalized,
+            imageUrl: it.imageUrl,
+          };
+        });
+      } else if (!overallSummaryLines.length) {
+        overallSummaryLines = ["No results found.", ""];
+      }
+    } else if (tab === "media") {
+      mediaItems = await imageSearch(searchQuery);
+      if (!mediaItems.length && !overallSummaryLines.length) {
+        overallSummaryLines = ["No images found.", ""];
+      }
+    }
+  }
+
+  if (hasQuery && isWeatherQuery && shouldShowTabs) {
+    const locs = extractLocationsFromQuery(searchQuery);
+    if (locs.length) {
+      const results = await Promise.all(locs.map((city) => fetchWeatherForCity(city)));
+      weatherItems = results;
+    } else {
+      // If no explicit locations, try single weather for the query itself
+      const single = await fetchWeatherForCity(searchQuery);
+      weatherItems = [single];
+    }
+  }
+
+  // Handle Videos tab fetching if we are on videos tab (though we already fetched if intent was youtube)
+  // But user might switch to videos tab manually even if intent wasn't youtube initially?
+  // Currently youtubeItems are only fetched if intent is youtube.
+  // If user clicks "Videos" tab, page reloads with tab=videos.
+  // We should fetch youtube items if tab is videos, even if intent didn't say so?
+  // Or just rely on youtube intent?
+  // Let's rely on intent or if tab is explicitly videos.
+  
+  if (hasQuery && activeTab === "videos" && shouldShowTabs && youtubeItems.length === 0) {
+     youtubeItems = await youtubeSearch(searchQuery);
+  }
+
+  if (hasQuery) {
+    try {
+      const hdrs = await headers();
+      const ip = hdrs.get("x-forwarded-for") || hdrs.get("x-real-ip") || null;
+      const ua = hdrs.get("user-agent") || null;
+      await logUserRequest({
+        requestType: "search",
+        parameters: { q, tab, searchQuery, shouldShowTabs },
+        responseStatus: 200,
+        responseData: {
+          hasQuery,
+          hasWebItems: webItems.length > 0,
+          hasMediaItems: mediaItems.length > 0,
+          hasYoutubeItems: youtubeItems.length > 0,
+          overallSummaryLines,
+        },
+        ipAddress: ip,
+        userAgent: ua,
+      });
+    } catch {}
+  }
+
+  return (
+    <main className="h-screen bg-white flex overflow-hidden">
+      <div className="sticky top-0 h-screen self-start">
+        <AppSidebar />
+      </div>
+      <section className="flex-1 flex flex-col items-center">
+        <div className="w-full">
+          <Header />
+        </div>
+        <SearchConversationShell
+          tab={activeTab} // Use activeTab instead of tab to reflect auto-switching
+          searchQuery={searchQuery}
+          shouldShowTabs={shouldShowTabs}
+          overallSummaryLines={overallSummaryLines}
+          webItems={webItems}
+          mediaItems={mediaItems}
+          isWeatherQuery={isWeatherQuery}
+          weatherItems={weatherItems}
+          youtubeItems={youtubeItems}
+          mapLocation={mapLocation}
+          googleMapsKey={process.env.GOOGLE_MAP_API_KEY}
+        />
+      </section>
+    </main>
+  );
+}

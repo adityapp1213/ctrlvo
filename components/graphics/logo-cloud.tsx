@@ -1,0 +1,158 @@
+// Scrolling logo strip showing trusted brands and partners
+import Image from 'next/image'
+import type { ReactNode } from 'react'
+
+type InfiniteSliderProps = {
+    children: ReactNode
+    speed?: number
+    speedOnHover?: number
+    gap?: number
+}
+
+const InfiniteSlider = ({ children, gap = 112 }: InfiniteSliderProps) => {
+    return (
+        <div className="overflow-hidden">
+            <div className="flex w-max" style={{ gap }}>
+                {children}
+            </div>
+        </div>
+    )
+}
+
+type ProgressiveBlurProps = {
+    className?: string
+    direction: 'left' | 'right'
+    blurIntensity?: number
+}
+
+const ProgressiveBlur = ({ className, direction, blurIntensity = 1 }: ProgressiveBlurProps) => {
+    const gradient =
+        direction === 'left'
+            ? 'linear-gradient(to right, hsl(var(--background)), transparent)'
+            : 'linear-gradient(to left, hsl(var(--background)), transparent)'
+    return (
+        <div
+            className={className}
+            style={{
+                background: gradient,
+                filter: `blur(${blurIntensity * 6}px)`,
+            }}
+        />
+    )
+}
+
+export const LogoCloud = () => {
+    return (
+        <section className="bg-background pb-16 md:pb-32">
+            <div className="group relative m-auto max-w-6xl px-6">
+                <div className="flex flex-col items-center md:flex-row">
+                    <div className="inline md:max-w-44 md:border-r md:pr-6">
+                        <p className="text-end text-sm">Powering the best teams</p>
+                    </div>
+                    <div className="relative py-6 md:w-[calc(100%-11rem)]">
+                        <InfiniteSlider
+                            speedOnHover={20}
+                            speed={40}
+                            gap={112}>
+                            <div className="flex">
+                                <Image
+                                    className="mx-auto h-5 w-fit dark:invert"
+                                    src="https://html.tailus.io/blocks/customers/nvidia.svg"
+                                    alt="Nvidia Logo"
+                                    height={20}
+                                    width={120}
+                                    unoptimized
+                                />
+                            </div>
+
+                            <div className="flex">
+                                <Image
+                                    className="mx-auto h-4 w-fit dark:invert"
+                                    src="https://html.tailus.io/blocks/customers/column.svg"
+                                    alt="Column Logo"
+                                    height={16}
+                                    width={120}
+                                    unoptimized
+                                />
+                            </div>
+                            <div className="flex">
+                                <Image
+                                    className="mx-auto h-4 w-fit dark:invert"
+                                    src="https://html.tailus.io/blocks/customers/github.svg"
+                                    alt="GitHub Logo"
+                                    height={16}
+                                    width={120}
+                                    unoptimized
+                                />
+                            </div>
+                            <div className="flex">
+                                <Image
+                                    className="mx-auto h-5 w-fit dark:invert"
+                                    src="https://html.tailus.io/blocks/customers/nike.svg"
+                                    alt="Nike Logo"
+                                    height={20}
+                                    width={120}
+                                    unoptimized
+                                />
+                            </div>
+                            <div className="flex">
+                                <Image
+                                    className="mx-auto h-5 w-fit dark:invert"
+                                    src="https://html.tailus.io/blocks/customers/lemonsqueezy.svg"
+                                    alt="Lemon Squeezy Logo"
+                                    height={20}
+                                    width={120}
+                                    unoptimized
+                                />
+                            </div>
+                            <div className="flex">
+                                <Image
+                                    className="mx-auto h-4 w-fit dark:invert"
+                                    src="https://html.tailus.io/blocks/customers/laravel.svg"
+                                    alt="Laravel Logo"
+                                    height={16}
+                                    width={120}
+                                    unoptimized
+                                />
+                            </div>
+                            <div className="flex">
+                                <Image
+                                    className="mx-auto h-7 w-fit dark:invert"
+                                    src="https://html.tailus.io/blocks/customers/lilly.svg"
+                                    alt="Lilly Logo"
+                                    height={28}
+                                    width={120}
+                                    unoptimized
+                                />
+                            </div>
+
+                            <div className="flex">
+                                <Image
+                                    className="mx-auto h-6 w-fit dark:invert"
+                                    src="https://html.tailus.io/blocks/customers/openai.svg"
+                                    alt="OpenAI Logo"
+                                    height={24}
+                                    width={120}
+                                    unoptimized
+                                />
+                            </div>
+                        </InfiniteSlider>
+
+                        <div className="bg-linear-to-r from-background absolute inset-y-0 left-0 w-20"></div>
+                        <div className="bg-linear-to-l from-background absolute inset-y-0 right-0 w-20"></div>
+                        <ProgressiveBlur
+                            className="pointer-events-none absolute left-0 top-0 h-full w-20"
+                            direction="left"
+                            blurIntensity={1}
+                        />
+                        <ProgressiveBlur
+                            className="pointer-events-none absolute right-0 top-0 h-full w-20"
+                            direction="right"
+                            blurIntensity={1}
+                        />
+                    </div>
+                </div>
+            </div>
+        </section>
+    )
+}
