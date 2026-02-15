@@ -16,6 +16,13 @@ type ImageSearchOptions = {
   safe?: "active" | "off" | "high" | "medium";
 };
 
+type WebItemSummary = {
+  link: string;
+  title: string;
+  summaryLines?: string[];
+  snippet?: string;
+};
+
 function extractJson(s: string) {
   const start = s.indexOf("{");
   const end = s.lastIndexOf("}");
@@ -94,6 +101,8 @@ export async function imageSearch(
   url.searchParams.set("q", trimmed);
   url.searchParams.set("searchType", "image");
   url.searchParams.set("num", String(num));
+  url.searchParams.set("imgSize", "large");
+  url.searchParams.set("fields", "items(link,title,image/thumbnailLink,image/contextLink)");
   if (options.safe) url.searchParams.set("safe", options.safe);
 
   try {
@@ -104,10 +113,19 @@ export async function imageSearch(
     }
     const json = await res.json();
     const items = Array.isArray(json.items) ? json.items : [];
-    const mapped = (items as Array<{ link: string; title?: string }>).slice(0, num).map((i) => ({
-      src: i.link,
-      alt: i.title,
-    }));
+    const mapped = (
+      items as Array<{
+        link?: string;
+        title?: string;
+        image?: { thumbnailLink?: string; contextLink?: string };
+      }>
+    )
+      .slice(0, num)
+      .map((i) => ({
+        src: i.link || i.image?.thumbnailLink || i.image?.contextLink || "",
+        alt: i.title,
+      }))
+      .filter((i) => Boolean(i.src));
     return mapped;
   } catch (err) {
     console.error("[ai:imageSearch] Error calling Custom Search API", err);
@@ -162,5 +180,115 @@ export async function summarizeItems(
   } catch (err) {
     console.error("[ai:summarizeItems] Error summarizing items", err);
     return { overallSummaryLines: [], summaries: [] };
+  }
+}
+
+export async function summarizeChatAnswerFromWebItems(
+  items: WebItemSummary[],
+  query?: string,
+  providerOverride?: "gemini" | "groq"
+): Promise<string> {
+  const trimmedItems = Array.isArray(items) ? items.slice(0, 3) : [];
+  if (!trimmedItems.length) return "";
+
+  const hasGroqKey = Boolean(process.env.GROQ_API_KEY || process.env.OPEN_AI_API_KEY);
+  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+  const provider = (providerOverride || process.env.AI_PROVIDER || (hasGroqKey ? "groq" : "gemini")).toLowerCase();
+
+  if (!(hasGroqKey || hasGeminiKey)) {
+    return "";
+  }
+
+  const trimmedQuery = (query ?? "").toString().trim();
+  const sourcePayload = trimmedItems.map((item, idx) => ({
+    index: idx + 1,
+    title: item.title,
+    link: item.link,
+    notes: (item.summaryLines || []).filter(Boolean).join(" ") || item.snippet || "",
+  }));
+
+  try {
+    const prompt =
+      `You are answering the user query: "${trimmedQuery || "N/A"}". ` +
+      "Use only the provided sources. Respond in a way that directly satisfies the user's request. " +
+      "If the user asks to list, recommend, or give examples, return a compact list of about 3–5 specific items; " +
+      "otherwise, give a short explanation. Keep the whole answer under ~5 short lines. " +
+      "When you reference a source, include its URL in angle brackets like <https://example.com> " +
+      "or <https://example.com|Label>. Do not use [1]-style numeric citations. " +
+      "Weave the links naturally into the text and do not say that you are citing sources. " +
+      `Sources: ${JSON.stringify(sourcePayload)}`;
+
+    const resp =
+      provider === "groq" && hasGroqKey
+        ? await GroqClient.getInstance().generateContent("openai/gpt-oss-120b", prompt)
+        : await GeminiClient.getInstance().generateContent("gemini-2.5-flash", prompt);
+
+    return (resp?.text || "").trim();
+  } catch (err) {
+    console.error("[ai:summarizeChatAnswerFromWebItems] Error summarizing chat answer", err);
+    return "";
+  }
+}
+
+type ShoppingItemSummary = {
+  title: string;
+  priceText?: string;
+  price?: number | null;
+  rating?: number | null;
+  reviewCount?: number | null;
+  source?: string;
+};
+
+export async function summarizeChatAnswerFromShoppingItems(
+  items: ShoppingItemSummary[],
+  query?: string,
+  providerOverride?: "gemini" | "groq"
+): Promise<string> {
+  const trimmedItems = Array.isArray(items) ? items.slice(0, 4) : [];
+  if (!trimmedItems.length) return "";
+
+  const hasGroqKey = Boolean(process.env.GROQ_API_KEY || process.env.OPEN_AI_API_KEY);
+  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+  const provider = (providerOverride || process.env.AI_PROVIDER || (hasGroqKey ? "groq" : "gemini")).toLowerCase();
+
+  if (!(hasGroqKey || hasGeminiKey)) {
+    return "";
+  }
+
+  const trimmedQuery = (query ?? "").toString().trim();
+  const sourcePayload = trimmedItems.map((item, idx) => ({
+    index: idx + 1,
+    title: item.title,
+    priceText: item.priceText,
+    price: item.price,
+    rating: item.rating,
+    reviewCount: item.reviewCount,
+    source: item.source,
+  }));
+
+  try {
+    const prompt =
+      `You are answering the user's shopping request: "${trimmedQuery || "N/A"}". ` +
+      "You are given up to 4 products with titles, prices, ratings, review counts, and sources. " +
+      "Use ONLY these products to answer. " +
+      "Assume the product cards are already visible to the user. " +
+      "Your job is to recommend which of these specific products are best for the user and why, " +
+      "and to directly answer their question or goal. " +
+      "Write your answer in Markdown as a short bullet list, one bullet per product you actually recommend. " +
+      "For each bullet, use this structure exactly: - **Product name** – price; rating★ from reviewCount reviews; one very short plain-English comment. " +
+      "Always include clear spaces between numbers and words (for example: 4.7★ from 22,000 reviews; comfy, stretchy black trousers for everyday wear). " +
+      "Do not remove spaces between words, do not jam numbers and words together, and do not emit any JSON. " +
+      "After the bullets, you may add one short sentence explaining which option is best overall. " +
+      `Products: ${JSON.stringify(sourcePayload)}`;
+
+    const resp =
+      provider === "groq" && hasGroqKey
+        ? await GroqClient.getInstance().generateContent("openai/gpt-oss-120b", prompt)
+        : await GeminiClient.getInstance().generateContent("gemini-2.5-flash", prompt);
+
+    return (resp?.text || "").trim();
+  } catch (err) {
+    console.error("[ai:summarizeChatAnswerFromShoppingItems] Error summarizing shopping answer", err);
+    return "";
   }
 }

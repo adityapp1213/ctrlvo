@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useUser } from "@clerk/nextjs";
+import { useMutation } from "convex/react";
+import { nanoid } from "nanoid";
 import {
   PromptInputAttachment,
   PromptInputAttachments,
@@ -27,6 +30,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { api } from "../../../convex/_generated/api";
 
 export function HomeSearchInput() {
   return (
@@ -38,107 +42,180 @@ export function HomeSearchInput() {
 
 function HomeSearchInputContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const { user } = useUser();
+  const userId = user?.id ?? null;
+  const initChat = useMutation(api.chat.initChat);
   const attachments = useProviderAttachments();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
   const inputValueRef = useRef("");
+  const isVoiceInputRef = useRef(false);
   const [input, setInput] = useState("");
   const [isSearch, setIsSearch] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [hasRecognition, setHasRecognition] = useState(false);
-  const [selectedApp, setSelectedApp] = useState<"apps" | "youtube" | "maps" | "spotify">("apps");
+  const [selectedApp, setSelectedApp] = useState<"apps" | "youtube" | "maps" | "shopping">("apps");
+  const [chatSessionId, setChatSessionId] = useState<string | null>(null);
 
-  const submitText = (rawText: string, source: "text" | "voice" = "text") => {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    let currentId = params.get("cxid");
+    if (!currentId) {
+      currentId = nanoid();
+      params.set("cxid", currentId);
+      const newUrl = `${window.location.pathname}?${params.toString()}`;
+      window.history.replaceState(
+        { ...(window.history.state || {}), as: newUrl, url: newUrl },
+        "",
+        newUrl
+      );
+    }
+    setChatSessionId(currentId);
+    if (!userId) return;
+    void (async () => {
+      try {
+        await initChat({
+          userId,
+          sessionId: currentId as string,
+          title: "",
+          createdAt: Date.now(),
+        });
+      } catch {
+      }
+    })();
+  }, [userId, initChat]);
+
+  const submitText = (rawText: string, source?: "text" | "voice") => {
     let text = rawText;
     if (!text.trim()) return;
 
-    const voiceParam = source === "voice" ? "&voice=1" : "";
+    const effectiveSource: "text" | "voice" =
+      source ?? (isVoiceInputRef.current ? "voice" : "text");
+    isVoiceInputRef.current = false;
+
+    const voiceParam = effectiveSource === "voice" ? "&voice=1" : "";
+    let sessionId = chatSessionId;
+    if (!sessionId) {
+      sessionId = nanoid();
+      setChatSessionId(sessionId);
+      if (userId) {
+        void (async () => {
+          try {
+            await initChat({
+              userId,
+              sessionId,
+              title: "",
+              createdAt: Date.now(),
+            });
+          } catch {
+          }
+        })();
+      }
+    }
+    const chatIdParam = `&chatId=${encodeURIComponent(sessionId)}`;
+
+    const searchParam = isSearch ? "&search=true" : "";
 
     if (selectedApp === "youtube") {
       text = `YouTube ${text}`;
+      router.push(
+        `/home/search?q=${encodeURIComponent(text)}${voiceParam}${chatIdParam}`
+      );
+      return;
     } else if (selectedApp === "maps") {
       text = `Map of ${text}`;
-      router.push(`/home/search?q=${encodeURIComponent(text)}&search=${isSearch}&tab=map${voiceParam}`);
+      router.push(
+        `/home/search?q=${encodeURIComponent(text)}&tab=map${voiceParam}${chatIdParam}`
+      );
       return;
-    } else if (selectedApp === "spotify") {
-      text = `Spotify ${text}`;
+    } else if (selectedApp === "shopping") {
+      text = `Shopping ${text}`;
+      router.push(
+        `/home/search?q=${encodeURIComponent(text)}${voiceParam}${chatIdParam}`
+      );
+      return;
     }
 
-    router.push(`/home/search?q=${encodeURIComponent(text)}&search=${isSearch}${voiceParam}`);
+    router.push(
+      `/home/search?q=${encodeURIComponent(text)}${searchParam}${voiceParam}${chatIdParam}`
+    );
   };
 
   const handleSubmit = () => {
-    submitText(input, "text");
+    submitText(input);
   };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const SpeechRecognitionCtor =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognitionCtor) return;
-    const recognition = new SpeechRecognitionCtor();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognition.onstart = () => {
-      setIsListening(true);
-      window.dispatchEvent(new CustomEvent("atom-ctrl-listening-state", { detail: true }));
-    };
-    recognition.onend = () => {
-      setIsListening(false);
-      window.dispatchEvent(new CustomEvent("atom-ctrl-listening-state", { detail: false }));
-    };
-    recognition.onresult = (event: any) => {
-      let finalTranscript = "";
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const result = event.results[i];
-        if (result.isFinal) {
-          finalTranscript += result[0]?.transcript ?? "";
-        }
-      }
-      if (!finalTranscript) return;
-      const currentValue = inputValueRef.current;
-      const nextValue = currentValue
-        ? `${currentValue} ${finalTranscript}`.trim()
-        : finalTranscript;
-      inputValueRef.current = nextValue;
-      setInput(nextValue);
-    };
-    recognition.onerror = () => {
-      setIsListening(false);
-      window.dispatchEvent(new CustomEvent("atom-ctrl-listening-state", { detail: false }));
-    };
-    recognitionRef.current = recognition;
-    setHasRecognition(true);
-
-    return () => {
-      recognition.stop();
-    };
+    setHasRecognition("mediaDevices" in navigator && "MediaRecorder" in window);
   }, []);
 
   const toggleListening = useCallback(() => {
-    const recognition = recognitionRef.current;
-    if (!recognition) return;
+    if (!hasRecognition) return;
     if (isListening) {
-      recognition.stop();
-    } else {
-      recognition.start();
+      if (recognitionRef.current instanceof MediaRecorder && recognitionRef.current.state !== "inactive") {
+        recognitionRef.current.stop();
+      }
+      setIsListening(false);
+      return;
     }
-  }, [isListening]);
+    if (!("mediaDevices" in navigator) || !("MediaRecorder" in window)) return;
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+        recognitionRef.current = recorder;
+        const chunks: BlobPart[] = [];
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            chunks.push(event.data);
+          }
+        };
+        recorder.onstop = async () => {
+          setIsListening(false);
+          stream.getTracks().forEach((t) => t.stop());
+          const blob = new Blob(chunks, { type: "audio/webm" });
+          if (blob.size === 0) return;
+          try {
+            const formData = new FormData();
+            formData.append("audio", blob, "audio.webm");
+            const res = await fetch("/api/deepgram/stt", {
+              method: "POST",
+              body: formData,
+            });
+            if (!res.ok) return;
+            const data = (await res.json()) as { transcript?: string };
+            const transcript = (data.transcript || "").trim();
+            if (!transcript) return;
+            isVoiceInputRef.current = true;
+            submitText(transcript, "voice");
+          } catch (err) {
+            console.error("HomeSearchInput STT error", err);
+          }
+        };
+        recorder.start(250);
+        setIsListening(true);
+      })
+      .catch((err) => {
+        console.error("Error starting HomeSearchInput recording", err);
+      });
+  }, [hasRecognition, isListening, submitText]);
 
   useEffect(() => {
-    const handleToggle = () => {
-      toggleListening();
+    return () => {
+      if (recognitionRef.current instanceof MediaRecorder && recognitionRef.current.state !== "inactive") {
+        recognitionRef.current.stop();
+      }
     };
-    window.addEventListener("atom-ctrl-toggle-listening", handleToggle);
-    return () => window.removeEventListener("atom-ctrl-toggle-listening", handleToggle);
-  }, [toggleListening]);
+  }, []);
 
   const getAppIcon = () => {
     switch (selectedApp) {
       case "youtube": return <Youtube size={16} />;
       case "maps": return <Map size={16} />;
-      case "spotify": return <AudioLines size={16} />;
+      case "shopping": return <AudioLines size={16} />;
       default: return <Grid size={16} />;
     }
   };
@@ -147,7 +224,7 @@ function HomeSearchInputContent() {
     switch (selectedApp) {
       case "youtube": return "YouTube";
       case "maps": return "Maps";
-      case "spotify": return "Spotify";
+      case "shopping": return "Shopping";
       default: return "Apps";
     }
   };
@@ -168,7 +245,7 @@ function HomeSearchInputContent() {
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 const next = (e.currentTarget.value || "").trim();
-                if (next) submitText(next, "text");
+                if (next) submitText(next);
               }
             }}
           />
@@ -207,9 +284,9 @@ function HomeSearchInputContent() {
                   <Map className="mr-2 h-4 w-4" />
                   <span>Maps</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setSelectedApp("spotify")}>
+                <DropdownMenuItem onClick={() => setSelectedApp("shopping")}>
                   <AudioLines className="mr-2 h-4 w-4" />
-                  <span>Spotify</span>
+                  <span>Shopping</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setSelectedApp("apps")}>
                   <Grid className="mr-2 h-4 w-4" />

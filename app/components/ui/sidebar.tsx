@@ -7,7 +7,9 @@ import React, { useState, createContext, useContext } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Menu, X, SquarePen, Trash2 } from "lucide-react";
 import { useSupabase } from "@/lib/supabase";
-import { getChatHistory, ChatSession, deleteChatSession } from "@/app/lib/chat-store";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "../../../convex/_generated/api";
 
 interface Links {
   label: string;
@@ -128,52 +130,90 @@ type HistoryItem = {
 
 const LocalHistory = () => {
   const { user } = useUser();
-  const [items, setItems] = useState<ChatSession[]>([]);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const deleteChat = useMutation(api.chat.deleteChat);
 
-  React.useEffect(() => {
-    const loadHistory = () => {
-      setItems(getChatHistory(user?.id ?? null));
-    };
-    loadHistory();
-    const handleUpdate = () => loadHistory();
-    window.addEventListener("chat-history-updated", handleUpdate);
-    return () => window.removeEventListener("chat-history-updated", handleUpdate);
-  }, [user?.id]);
+  const userId = user?.id ?? null;
+  const chats = useQuery(
+    api.chat.listUserChats,
+    userId ? { userId } : "skip"
+  );
 
-  const handleDelete = (e: React.MouseEvent, id: string) => {
+  const handleDelete = async (e: React.MouseEvent, sessionId: string) => {
     e.preventDefault();
     e.stopPropagation();
-    deleteChatSession(user?.id ?? null, id);
+    if (!userId) return;
+    try {
+      await deleteChat({ userId, sessionId });
+    } catch (err) {
+      console.error("Failed to delete chat", err);
+    }
+    const currentChatId = searchParams.get("chatId");
+    if (currentChatId === sessionId) {
+      router.push("/home");
+    }
   };
 
-  if (!items.length) return null;
+  if (!chats || !chats.length) return null;
 
   return (
     <div className="flex flex-col gap-2 mb-4">
       <ul className="space-y-1">
-        {items.map((item) => (
-          <li key={item.id} className="group relative">
-             <Link 
-                href={`/home/search?chatId=${item.id}`}
-                className="block rounded-md border border-neutral-200 dark:border-neutral-700 px-2 py-1.5 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-             >
-                <div className="flex justify-between gap-2 pr-6">
-                   <span className="font-medium truncate">{item.title}</span>
-                </div>
-                <div className="mt-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
-                   {new Date(item.timestamp).toLocaleTimeString()}
-                </div>
-             </Link>
-             <button
-               onClick={(e) => handleDelete(e, item.id)}
-               className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 p-1 text-neutral-400 hover:text-red-500 transition-all"
-               aria-label="Delete chat"
-             >
-               <Trash2 className="w-3 h-3" />
-             </button>
+        {chats.map((item: any) => (
+          <li key={item.sessionId} className="group relative">
+            <Link
+              href={`/home/search?chatId=${encodeURIComponent(item.sessionId)}`}
+              className="block rounded-md border border-neutral-200 dark:border-neutral-700 px-2 py-1.5 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+            >
+              <div className="flex justify-between gap-2 pr-6">
+                <span className="font-medium truncate">
+                  {item.name || item.title || "New chat"}
+                </span>
+              </div>
+              <div className="mt-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
+                {new Date(item.updatedAt || item.createdAt).toLocaleTimeString()}
+              </div>
+            </Link>
+            <button
+              onClick={(e) => handleDelete(e, item.sessionId)}
+              className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 p-1 text-neutral-400 hover:text-red-500 transition-all"
+              aria-label="Delete chat"
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
           </li>
         ))}
       </ul>
+    </div>
+  );
+};
+
+const VisualMemoryPreview = () => {
+  const searchParams = useSearchParams();
+  const chatId = searchParams.get("chatId");
+
+  if (!chatId) return null;
+
+  const src = `/api/memory/image?chatId=${encodeURIComponent(chatId)}`;
+
+  return (
+    <div className="mt-2">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400 mb-1">
+        Memory
+      </h2>
+      <div className="rounded-md border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900/40 p-2">
+        <div className="aspect-[4/3] w-full overflow-hidden rounded-sm bg-neutral-200 dark:bg-neutral-800 flex items-center justify-center">
+          <img
+            src={src}
+            alt="Conversation memory"
+            className="w-full h-full object-cover"
+            onError={(e) => {
+              e.currentTarget.style.visibility = "hidden";
+            }}
+          />
+        </div>
+      </div>
     </div>
   );
 };
@@ -244,6 +284,7 @@ const AppSidebarContent = () => {
           History
         </h2>
         <LocalHistory />
+        <VisualMemoryPreview />
         {showRequestHistory && <RequestHistory userId={user?.id ?? null} />}
       </div>
       <div className="mt-2 pt-3 border-t border-neutral-200 dark:border-neutral-700 flex items-center gap-3">

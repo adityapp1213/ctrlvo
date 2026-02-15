@@ -161,16 +161,16 @@ const HardenedMarkdown = hardenReactMarkdown(ReactMarkdown);
 
 export type ResponseProps = HTMLAttributes<HTMLDivElement> & {
   options?: Options;
-  children: Options['children'];
+  children: Options["children"];
   allowedImagePrefixes?: ComponentProps<
     ReturnType<typeof hardenReactMarkdown>
-  >['allowedImagePrefixes'];
+  >["allowedImagePrefixes"];
   allowedLinkPrefixes?: ComponentProps<
     ReturnType<typeof hardenReactMarkdown>
-  >['allowedLinkPrefixes'];
+  >["allowedLinkPrefixes"];
   defaultOrigin?: ComponentProps<
     ReturnType<typeof hardenReactMarkdown>
-  >['defaultOrigin'];
+  >["defaultOrigin"];
   parseIncompleteMarkdown?: boolean;
 };
 
@@ -355,12 +355,11 @@ export const Response = memo(
     allowedImagePrefixes,
     allowedLinkPrefixes,
     defaultOrigin,
-    parseIncompleteMarkdown: shouldParseIncompleteMarkdown = true,
+    parseIncompleteMarkdown: shouldParseIncompleteMarkdown = false,
     ...props
   }: ResponseProps) => {
-    // Parse the children to remove incomplete markdown tokens if enabled
     const parsedChildren =
-      typeof children === 'string' && shouldParseIncompleteMarkdown
+      typeof children === "string" && shouldParseIncompleteMarkdown
         ? parseIncompleteMarkdown(children)
         : children;
 

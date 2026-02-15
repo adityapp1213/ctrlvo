@@ -17,11 +17,18 @@ export function HomeCloud({ className, rangeX = 20, rangeY = 10 }: { className?:
   const [isLongPressing, setIsLongPressing] = useState(false);
 
   useEffect(() => {
-    const handleListeningState = (e: any) => {
-      setIsListening(e.detail);
+    const handleListeningState = (e: Event) => {
+      const detail = (e as CustomEvent<boolean>).detail;
+      setIsListening(Boolean(detail));
     };
-    window.addEventListener("atom-ctrl-listening-state", handleListeningState);
-    return () => window.removeEventListener("atom-ctrl-listening-state", handleListeningState);
+    if (typeof window !== "undefined") {
+      window.addEventListener("atom-ctrl-listening-state", handleListeningState as EventListener);
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("atom-ctrl-listening-state", handleListeningState as EventListener);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -49,18 +56,8 @@ export function HomeCloud({ className, rangeX = 20, rangeY = 10 }: { className?:
     return () => clearInterval(interval);
   }, [isListening]);
 
-  // Handle click outside to stop listening
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (isListening && ref.current && !ref.current.contains(event.target as Node)) {
-        window.dispatchEvent(new CustomEvent("atom-ctrl-toggle-listening"));
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, [isListening]);
+  // Handle click outside to stop listening - removed
+
 
   const handleMouseDown = () => {
     setIsLongPressing(true);
@@ -83,7 +80,11 @@ export function HomeCloud({ className, rangeX = 20, rangeY = 10 }: { className?:
         scale: 1,
         transition: { duration: 4, repeat: Infinity, ease: "easeInOut" }
       }}
-      onDoubleClick={() => window.dispatchEvent(new CustomEvent("atom-ctrl-toggle-listening"))}
+      onDoubleClick={() => {
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new Event("atom-ctrl-toggle-listening"));
+        }
+      }}
       onClick={(e) => {
         // Only trigger on double tap as per user request
         e.stopPropagation();

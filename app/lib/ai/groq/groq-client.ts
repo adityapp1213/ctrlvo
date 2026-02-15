@@ -150,4 +150,66 @@ export class GroqClient {
 
     throw lastError || new Error("[GroqClient] All API keys failed");
   }
+
+  public async *streamContent(
+    model: string,
+    userText: string,
+    options: GroqGenerateContentOptions = {}
+  ): AsyncGenerator<string, void, unknown> {
+    const systemText = Array.isArray(options.systemInstruction?.parts)
+      ? options.systemInstruction!.parts.map((p) => p.text).filter(Boolean).join("\n")
+      : "";
+
+    const messages: Array<{ role: "system" | "user"; content: string }> = [];
+    if (systemText) messages.push({ role: "system", content: systemText });
+    messages.push({ role: "user", content: userText });
+
+    let lastError: unknown = null;
+
+    for (const key of this.apiKeys) {
+      const client = this.getClient(key);
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const stream = await client.chat.completions.create({
+            model,
+            messages,
+            tools: (options.tools as unknown as any) ?? undefined,
+            tool_choice: options.tools?.length ? ("auto" as any) : undefined,
+            stream: true,
+          });
+
+          for await (const chunk of stream as AsyncIterable<{
+            choices?: Array<{ delta?: { content?: string } }>;
+          }>) {
+            const delta = chunk?.choices?.[0]?.delta?.content ?? "";
+            if (delta) yield delta;
+          }
+          return;
+        } catch (err) {
+          lastError = err;
+          const anyErr = err as unknown as { status?: number; message?: string };
+          const status = anyErr?.status;
+          const message = String(anyErr?.message ?? "");
+          const lower = message.toLowerCase();
+
+          const retryable =
+            status === 429 ||
+            status === 503 ||
+            lower.includes("timeout") ||
+            lower.includes("temporarily unavailable") ||
+            lower.includes("rate limit");
+
+          if (retryable && attempt < MAX_RETRIES) {
+            const delay = inferRetryDelayMs(err, INITIAL_RETRY_DELAY * Math.pow(2, attempt - 1));
+            await new Promise((r) => setTimeout(r, delay));
+            continue;
+          }
+
+          break;
+        }
+      }
+    }
+
+    throw lastError || new Error("[GroqClient] All API keys failed");
+  }
 }

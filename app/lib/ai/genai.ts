@@ -9,6 +9,8 @@ export type DetectResult = {
   overallSummaryLines: string[];
   mapLocation?: string;
   youtubeQuery?: string;
+  webSearchQuery?: string;
+  shoppingQuery?: string;
 };
 
 function tryAnswerFromContext(query: string, context?: string[]): string | null {
@@ -100,6 +102,10 @@ function shouldAllowMapLocation(location: string, userQuery: string): boolean {
   if (!loc || !q) return false;
   if (looksLikeSmallTalk(loc) || looksLikeSmallTalk(q)) return false;
 
+  const words = loc.split(/\s+/).filter(Boolean);
+  // Hard guard against long paragraphs or big sentences being treated as locations
+  if (loc.length > 80 || words.length > 8) return false;
+
   const qLower = q.toLowerCase();
   const hasExplicitMapIntent =
     /\b(map|maps|directions|direction|route|navigate|navigation|location|address|where is|nearest|closest)\b/i.test(
@@ -111,7 +117,6 @@ function shouldAllowMapLocation(location: string, userQuery: string): boolean {
 
   const hasDigits = /\d/.test(loc);
   const hasComma = loc.includes(",");
-  const words = loc.split(/\s+/).filter(Boolean);
   const hasTwoOrMoreWords = words.length >= 2;
 
   const hasPlaceKeyword =
@@ -141,39 +146,6 @@ function shouldAllowMapLocation(location: string, userQuery: string): boolean {
   return false;
 }
 
-function inferMapLocationFromQuery(query: string): string | undefined {
-  const raw = (query ?? "").trim();
-  if (!raw) return undefined;
-  const cleaned = raw.replace(/^['"`]+|['"`]+$/g, "").trim();
-  if (looksLikeSmallTalk(cleaned)) return undefined;
-  const lower = cleaned.toLowerCase();
-
-  const prefixPatterns: RegExp[] = [
-    /^(map of|show map of|location of|where is|directions to|navigate to|route to)\s+/i,
-    /^map\s+/i,
-  ];
-  for (const re of prefixPatterns) {
-    const m = cleaned.match(re);
-    if (m) {
-      const rest = cleaned.replace(re, "").trim();
-      if (rest && shouldAllowMapLocation(rest, cleaned)) return rest;
-    }
-  }
-
-  const inMatch = lower.match(/\b(in|near|around|at)\s+(.+)$/i);
-  if (inMatch && inMatch[2]) {
-    const loc = cleaned.slice(cleaned.toLowerCase().lastIndexOf(inMatch[2])).trim();
-    if (loc && shouldAllowMapLocation(loc, cleaned)) return loc;
-  }
-
-  if (cleaned.includes("?")) return undefined;
-  if (!/^[\p{L}\p{M}\d\s,.'-]+$/u.test(cleaned) || cleaned.length > 80) return undefined;
-  if (!shouldAllowMapLocation(cleaned, cleaned)) return undefined;
-  return cleaned;
-
-  return undefined;
-}
-
 export async function detectIntent(
   query: string,
   context?: string[],
@@ -185,12 +157,24 @@ export async function detectIntent(
   
   if (looksLikeSmallTalk(trimmed)) {
     const lower = trimmed.toLowerCase();
+    const asksName =
+      /\b(your name|who are you|what are you|who r u)\b/.test(lower);
+
     const line =
-      lower.includes("thank") || lower.includes("thx") || lower.includes("tysm") || lower.includes("appreciate")
+      lower.includes("thank") ||
+      lower.includes("thx") ||
+      lower.includes("tysm") ||
+      lower.includes("appreciate")
         ? "You're welcome! Anything else you want to do?"
-        : lower === "hi" || lower === "hello" || lower === "hey" || lower.startsWith("good ")
-          ? "Hi! What can I help you with?"
-          : "Got it. What would you like to do next?";
+        : asksName
+        ? "I'm Cloudy, your AI assistant. What can I help you with?"
+        : lower === "hi" ||
+          lower === "hello" ||
+          lower === "hey" ||
+          lower.startsWith("good ")
+        ? "Hi! What can I help you with?"
+        : "Hi! What can I help you with?";
+
     return {
       shouldShowTabs: false,
       searchQuery: null,
@@ -235,6 +219,8 @@ export async function detectIntent(
   let overallSummaryLines: string[] = [];
   let mapLocation: string | undefined;
   let youtubeQuery: string | undefined;
+  let webSearchQuery: string | null = null;
+  let shoppingQuery: string | null = null;
 
   try {
     const systemInstruction = {
@@ -274,22 +260,82 @@ export async function detectIntent(
                 "Very short plain-text summary or reply for the user (1–2 short sentences).",
             },
             searchQuery: {
-              type: "string",
+              type: ["string", "null"],
               description:
                 "Optional refined web search query if search tabs should be shown. Empty string if not needed.",
             },
             youtubeQuery: {
-              type: "string",
+              type: ["string", "null"],
               description:
                 "Optional YouTube search query when the user mainly wants videos. Empty string if not needed.",
             },
             mapLocation: {
-              type: "string",
+              type: ["string", "null"],
               description:
                 "Optional city, place name, or address for maps when the query is about a location.",
             },
+            shoppingQuery: {
+              type: ["string", "null"],
+              description:
+                "Optional shopping query string when the user is mainly looking for products to buy.",
+            },
           },
           required: ["shouldShowTabs", "response"],
+        },
+      },
+      {
+        name: "intent",
+        description:
+          "Return a structured intent result for the current query. Use this for most queries instead of plain text.",
+        parameters: {
+          type: "object",
+          properties: {
+            shouldShowTabs: {
+              type: "string",
+              description:
+                "Whether search tabs should be shown. Use \"true\" or \"false\" (string).",
+            },
+            response: {
+              type: "string",
+              description:
+                "Very short plain-text summary or reply for the user (1–2 short sentences).",
+            },
+            searchQuery: {
+              type: ["string", "null"],
+              description:
+                "Optional refined web search query if search tabs should be shown. Empty string if not needed.",
+            },
+            youtubeQuery: {
+              type: ["string", "null"],
+              description:
+                "Optional YouTube search query when the user mainly wants videos. Empty string if not needed.",
+            },
+            mapLocation: {
+              type: ["string", "null"],
+              description:
+                "Optional city, place name, or address for maps when the query is about a location.",
+            },
+            shoppingQuery: {
+              type: ["string", "null"],
+              description:
+                "Optional shopping query string when the user is mainly looking for products to buy.",
+            },
+          },
+          required: ["shouldShowTabs", "response"],
+        },
+      },
+      {
+        name: "shopping_search",
+        description: "Search for products using Google Shopping for the given query.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "Product search query, for example: \"macbook air m3 laptop\".",
+            },
+          },
+          required: ["query"],
         },
       },
       {
@@ -369,7 +415,7 @@ export async function detectIntent(
     if (pre && pre.functionCalls && pre.functionCalls.length > 0) {
       for (const fc of pre.functionCalls) {
         const args = (fc.args ?? {}) as Record<string, unknown>;
-        if (fc.name === "json") {
+        if (fc.name === "json" || fc.name === "intent") {
           const rawTabs = String(args.shouldShowTabs ?? "").toLowerCase().trim();
           if (rawTabs === "true" || rawTabs === "false") {
             shouldShowTabs = rawTabs === "true";
@@ -382,6 +428,7 @@ export async function detectIntent(
           if (sq) {
             shouldShowTabs = true;
             if (!searchQuery) searchQuery = sq;
+            webSearchQuery = sq;
           }
           const yq = String(args.youtubeQuery ?? "").trim();
           if (yq) {
@@ -403,11 +450,26 @@ export async function detectIntent(
               overallSummaryLines = [`Showing map for: ${loc}`, ""];
             }
           }
+          const shop = String(args.shoppingQuery ?? "").trim();
+          if (shop) {
+            shouldShowTabs = true;
+            shoppingQuery = shop;
+            if (!searchQuery) {
+              searchQuery = shop;
+            }
+            if (overallSummaryLines.length === 0) {
+              overallSummaryLines = [`Found products for: ${shop}`, ""];
+            }
+          }
         } else if (fc.name === "web_search") {
           shouldShowTabs = true;
           // Prefer keeping existing searchQuery if already set by another tool (unlikely but safe)
-          if (!searchQuery) {
-            searchQuery = String(args.query ?? safeQuery);
+          const q = String(args.query ?? safeQuery).trim();
+          if (q) {
+            webSearchQuery = q;
+            if (!searchQuery) {
+              searchQuery = q;
+            }
           }
         } else if (fc.name === "youtube_search") {
           shouldShowTabs = true;
@@ -452,6 +514,18 @@ export async function detectIntent(
             console.warn("[ai:detectIntent] FX service error", err);
             overallSummaryLines = ["FX service error", ""];
           }
+        } else if (fc.name === "shopping_search") {
+          const q = String(args.query ?? safeQuery).trim();
+          if (q) {
+            shouldShowTabs = true;
+            shoppingQuery = q;
+            if (!searchQuery) {
+              searchQuery = q;
+            }
+            if (overallSummaryLines.length === 0) {
+              overallSummaryLines = [`Found products for: ${q}`, ""];
+            }
+          }
         }
       }
       
@@ -463,13 +537,8 @@ export async function detectIntent(
       overallSummaryLines = [pre?.text || safeQuery.slice(0, 120), ""];
     }
 
-    if (!mapLocation) {
-      const inferred = inferMapLocationFromQuery(searchQuery ?? safeQuery);
-      if (inferred) {
-        mapLocation = inferred;
-        if (!searchQuery) searchQuery = inferred;
-        shouldShowTabs = true;
-      }
+    if (shouldShowTabs && !webSearchQuery && !youtubeQuery && !mapLocation && !shoppingQuery) {
+      shouldShowTabs = false;
     }
 
     return {
@@ -478,6 +547,8 @@ export async function detectIntent(
       overallSummaryLines,
       mapLocation,
       youtubeQuery,
+      webSearchQuery: webSearchQuery || undefined,
+      shoppingQuery: shoppingQuery || undefined,
     };
   } catch (err) {
     const message = String((err as unknown as { message?: string })?.message ?? err ?? "");
@@ -497,5 +568,13 @@ export async function detectIntent(
     }
   }
 
-  return { shouldShowTabs, searchQuery, overallSummaryLines };
+  return {
+    shouldShowTabs,
+    searchQuery,
+    overallSummaryLines,
+    mapLocation,
+    youtubeQuery,
+    webSearchQuery: webSearchQuery || undefined,
+    shoppingQuery: shoppingQuery || undefined,
+  };
 }

@@ -101,4 +101,83 @@ export class GeminiClient {
     // If we get here, all keys failed
     throw lastError || new Error("[GeminiClient] All API keys failed");
   }
+
+  public async *streamContent(
+    model: string,
+    contents: string,
+    config?: GenerateContentConfig
+  ): AsyncGenerator<string, void, unknown> {
+    if (this.apiKeys.length === 0) {
+      throw new Error("Missing GEMINI_API_KEY or GOOGLE_API_KEY");
+    }
+
+    let lastError: unknown;
+
+    for (const apiKey of this.apiKeys) {
+      const client = this.getClient(apiKey);
+      let attempt = 0;
+      while (attempt < MAX_RETRIES) {
+        try {
+          const result = await (client.models as any).generateContentStream({
+            model,
+            contents,
+            config,
+          });
+
+          const stream =
+            (result as any)?.stream && typeof (result as any).stream[Symbol.asyncIterator] === "function"
+              ? (result as any).stream
+              : result;
+
+          if (!stream || typeof (stream as any)[Symbol.asyncIterator] !== "function") {
+            throw new Error("stream_unavailable");
+          }
+
+          for await (const chunk of stream as AsyncIterable<any>) {
+            const text =
+              typeof chunk?.text === "string"
+                ? chunk.text
+                : Array.isArray(chunk?.candidates)
+                ? chunk.candidates
+                    .map((c: any) =>
+                      Array.isArray(c?.content?.parts)
+                        ? c.content.parts.map((p: any) => p?.text || "").join("")
+                        : ""
+                    )
+                    .join("")
+                : "";
+            if (text) {
+              yield text;
+            }
+          }
+          return;
+        } catch (error: unknown) {
+          attempt++;
+          lastError = error;
+          const message = error instanceof Error ? error.message : String(error);
+          const isOverloaded = message.includes("503") || message.includes("overloaded") || message.includes("UNAVAILABLE");
+          const isQuota = message.includes("quota exceeded") || message.includes("RESOURCE_EXHAUSTED");
+          const isFetchError = message.includes("fetch failed") || message.includes("network");
+
+          if (isQuota) {
+            break;
+          }
+
+          if (message.includes("API key not valid") || message.includes("permission denied")) {
+            break;
+          }
+
+          if ((isOverloaded || isFetchError) && attempt < MAX_RETRIES) {
+            const delay = INITIAL_RETRY_DELAY * Math.pow(2, attempt - 1);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+
+          break;
+        }
+      }
+    }
+
+    throw lastError || new Error("[GeminiClient] All API keys failed");
+  }
 }

@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
 import { useAutoResizeTextarea } from "@/components/hooks/use-auto-resize-textarea";
+import { deepgramTranscribeAudioBlob } from "@/app/lib/deepgram/stt";
+import { stopDeepgramAudio } from "@/app/lib/deepgram/tts";
 
 export type AIInputSubmitMeta = {
   source: "text" | "voice";
@@ -44,6 +46,10 @@ export function AIInput({
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const silenceStartRef = useRef<number | null>(null);
 
   const isControlled = value !== undefined;
   const inputValue = isControlled ? value : internalValue;
@@ -66,57 +72,6 @@ export function AIInput({
     onValueChange?.("");
     adjustHeight(true);
   };
-
-  const CARTESIA_VERSION = "2025-04-16";
-  const CARTESIA_VOICE_ID = "a167e0f3-df7e-4d52-a9c3-f949145efdab";
-
-  const humanizeCartesiaTranscript = useCallback((text: string) => {
-    const raw = (text || "").trim();
-    if (!raw) return raw;
-
-    const hasEmotion = /<emotion\s+value\s*=\s*["'][^"']+["']\s*\/?>/i.test(raw);
-    const inferEmotion = (t: string) => {
-      const lower = t.toLowerCase();
-      if (lower.includes("sorry") || lower.includes("apolog")) return "apologetic";
-      if (lower.includes("thank") || lower.includes("grateful")) return "grateful";
-      if (lower.includes("wow") || lower.includes("awesome") || lower.includes("amazing") || lower.includes("great") || /!/.test(t))
-        return "excited";
-      if (t.trim().endsWith("?")) return "curious";
-      if (lower.includes("scared") || lower.includes("afraid")) return "scared";
-      if (lower.includes("angry") || lower.includes("mad")) return "angry";
-      return "content";
-    };
-
-    const emotion = inferEmotion(raw);
-    let out = hasEmotion ? raw : `<emotion value="${emotion}" />${raw}`;
-
-    if (!/\[laughter\]/i.test(out) && emotion === "excited") {
-      const serious = /\b(error|failed|cannot|can't|unable|sorry)\b/i.test(raw);
-      if (!serious) {
-        const firstPunct = out.slice(0, 200).search(/[.!?]/);
-        if (firstPunct >= 0) {
-          out =
-            out.slice(0, firstPunct + 1) +
-            " [laughter]<break time=\"200ms\"/>" +
-            out.slice(firstPunct + 1).replace(/^\s+/, "");
-        }
-      }
-    }
-
-    if (!/\(ahem\)|\*cough\*/i.test(out)) {
-      const lower = raw.toLowerCase();
-      if (lower.startsWith("actually") || lower.startsWith("well,") || lower.startsWith("so,")) {
-        out = out.replace(/^(\s*<emotion[^>]*\/>\s*)/i, `$1(ahem)<break time="200ms"/>`);
-      }
-    }
-
-    out = out.replace(/([.!?])\s+(?=[A-Z0-9])/g, `$1<break time="250ms"/>`);
-    out = out.replace(/,\s+(?=[^\s<])/g, `,<break time="150ms"/>`);
-    out = out.replace(/:\s+(?=[^\s<])/g, `:<break time="200ms"/>`);
-
-    out = out.replace(/(?:<break time="[^"]+"\/>){2,}/g, (m) => m.match(/<break time="[^"]+"\/>/)?.[0] ?? m);
-    return out.trim();
-  }, []);
 
   const unlockAudio = useCallback(async () => {
     const w = window as unknown as {
@@ -143,115 +98,52 @@ export function AIInput({
     } catch {}
   }, []);
 
-  const getAccessToken = useCallback(async (): Promise<string> => {
-    const w = window as unknown as {
-      __atomCartesiaAccessTokenCache?: { token: string; expiresAt: number };
-    };
-    const cached = w.__atomCartesiaAccessTokenCache;
-    if (cached && Date.now() < cached.expiresAt - 10_000) return cached.token;
-
-    const resp = await fetch("/api/cartesia/access-token", { method: "GET" });
-    if (!resp.ok) throw new Error("cartesia_access_token_failed");
-    const data = (await resp.json()) as { token: string; expiresAt: number };
-    w.__atomCartesiaAccessTokenCache = { token: data.token, expiresAt: data.expiresAt };
-    return data.token;
-  }, []);
-
-  const stopAnyPlayingAudio = useCallback(() => {
-    const w = window as unknown as { __atomCartesiaAudio?: HTMLAudioElement };
-    if (w.__atomCartesiaAudio) {
-      w.__atomCartesiaAudio.pause();
-      w.__atomCartesiaAudio.src = "";
-      w.__atomCartesiaAudio.load();
-      w.__atomCartesiaAudio = undefined;
-    }
-  }, []);
-
   const speakWithSpeechSynthesis = useCallback((text: string) => {
-    const trimmed = (text || "").trim();
-    if (!trimmed) return;
-    if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") return;
-    try {
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(trimmed);
-      u.lang = "en-US";
-      window.speechSynthesis.speak(u);
-    } catch {}
+    // Speech synthesis disabled
   }, []);
 
   const speakText = useCallback(
     async (text: string) => {
-      const trimmed = (text || "").trim();
-      if (!trimmed) return;
-      try {
-        const transcript = humanizeCartesiaTranscript(trimmed);
-        const token = await getAccessToken();
-        const ttsResp = await fetch("https://api.cartesia.ai/tts/bytes", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Cartesia-Version": CARTESIA_VERSION,
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            transcript,
-            model_id: "sonic-3",
-            voice: { mode: "id", id: CARTESIA_VOICE_ID },
-            output_format: {
-              container: "wav",
-              encoding: "pcm_s16le",
-              sample_rate: 44100,
-            },
-          }),
-        });
-        if (!ttsResp.ok) throw new Error("cartesia_tts_failed");
-        const bytes = await ttsResp.arrayBuffer();
-        const blob = new Blob([bytes], { type: "audio/wav" });
-        const url = URL.createObjectURL(blob);
-        stopAnyPlayingAudio();
-        const audio = new Audio(url);
-        audio.muted = false;
-        audio.volume = 1;
-        (window as unknown as { __atomCartesiaAudio?: HTMLAudioElement }).__atomCartesiaAudio = audio;
-        audio.onended = () => {
-          URL.revokeObjectURL(url);
-        };
-        await unlockAudio();
-        await audio.play();
-      } catch {
-        speakWithSpeechSynthesis(trimmed);
-      }
+      // Speech disabled
     },
-    [getAccessToken, humanizeCartesiaTranscript, speakWithSpeechSynthesis, stopAnyPlayingAudio, unlockAudio]
+    [speakWithSpeechSynthesis]
   );
 
   const transcribeAudio = useCallback(
     async (audioBlob: Blob): Promise<string> => {
-      const token = await getAccessToken();
-      const form = new FormData();
-      form.append("file", new File([audioBlob], "speech.webm", { type: audioBlob.type || "audio/webm" }));
-      form.append("model", "ink-whisper");
-      form.append("language", "en");
-
-      const resp = await fetch("https://api.cartesia.ai/audio/transcriptions", {
-        method: "POST",
-        headers: {
-          "Cartesia-Version": CARTESIA_VERSION,
-          Authorization: `Bearer ${token}`,
-        },
-        body: form,
-      });
-      if (!resp.ok) throw new Error("cartesia_stt_failed");
-      const data = (await resp.json()) as { text?: string; transcript?: string };
-      return (data.text || data.transcript || "").trim();
+      try {
+        setIsSpeechProcessing(true);
+        onSpeechProcessingChange?.(true);
+        const transcript = await deepgramTranscribeAudioBlob(audioBlob);
+        return transcript;
+      } finally {
+        setIsSpeechProcessing(false);
+        onSpeechProcessingChange?.(false);
+      }
     },
-    [getAccessToken]
+    [onSpeechProcessingChange]
   );
 
   const cleanupStream = useCallback(() => {
     if (stopTimerRef.current) {
       clearTimeout(stopTimerRef.current);
       stopTimerRef.current = null;
+    }
+    silenceStartRef.current = null;
+    const processor = audioProcessorRef.current;
+    if (processor) {
+      processor.disconnect();
+      audioProcessorRef.current = null;
+    }
+    const source = audioSourceRef.current;
+    if (source) {
+      source.disconnect();
+      audioSourceRef.current = null;
+    }
+    const ctx = audioContextRef.current;
+    if (ctx) {
+      ctx.close().catch(() => {});
+      audioContextRef.current = null;
     }
     const stream = mediaStreamRef.current;
     mediaStreamRef.current = null;
@@ -274,104 +166,133 @@ export function AIInput({
   }, []);
 
   const startRecording = useCallback(async () => {
-    if (isListening) return;
-    if (!("mediaDevices" in navigator) || !navigator.mediaDevices.getUserMedia) return;
+    if (typeof window === "undefined" || !("mediaDevices" in navigator)) return;
+    if (!("MediaRecorder" in window)) return;
 
-    setIsSpeechProcessing(false);
-    onSpeechProcessingChange?.(false);
+    try {
+      void unlockAudio();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      const recorder = new MediaRecorder(stream, {
+        mimeType: "audio/webm",
+      });
+      mediaRecorderRef.current = recorder;
+      chunksRef.current = [];
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    mediaStreamRef.current = stream;
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
 
-    const mimeCandidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
-    const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m));
-    const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-    mediaRecorderRef.current = rec;
-    chunksRef.current = [];
+      recorder.onstop = async () => {
+        setIsListening(false);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("atom-ctrl-listening-state", { detail: false })
+          );
+        }
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        cleanupStream();
+        if (blob.size === 0) return;
+        const transcript = await transcribeAudio(blob);
+        const finalText = (transcript || "").trim();
+        if (!finalText) return;
+        handleValueChange(finalText);
+        onSubmit?.(finalText, { source: "voice" });
+      };
 
-    rec.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
-    };
-
-    rec.onstart = () => {
+      recorder.start(250);
       setIsListening(true);
-      window.dispatchEvent(new CustomEvent("atom-ctrl-listening-state", { detail: true }));
-    };
-
-    rec.onstop = async () => {
-      let didSetProcessing = false;
-      try {
-        const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
-        cleanupStream();
-        setIsListening(false);
-        window.dispatchEvent(new CustomEvent("atom-ctrl-listening-state", { detail: false }));
-
-        setIsSpeechProcessing(true);
-        onSpeechProcessingChange?.(true);
-        didSetProcessing = true;
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-
-        const text = await transcribeAudio(blob);
-        setIsSpeechProcessing(false);
-        onSpeechProcessingChange?.(false);
-        didSetProcessing = false;
-        if (!text) {
-          await speakText("Please repeat what you said");
-          return;
-        }
-
-        handleValueChange(text);
-        onSubmit?.(text, { source: "voice" });
-        if (!isControlled) {
-          setInternalValue("");
-        }
-        onValueChange?.("");
-        adjustHeight(true);
-      } catch {
-        cleanupStream();
-        setIsListening(false);
-        window.dispatchEvent(new CustomEvent("atom-ctrl-listening-state", { detail: false }));
-      } finally {
-        if (didSetProcessing) {
-          setIsSpeechProcessing(false);
-          onSpeechProcessingChange?.(false);
-        }
+      if (stopTimerRef.current) {
+        clearTimeout(stopTimerRef.current);
       }
-    };
-
-    rec.start();
-    stopTimerRef.current = setTimeout(() => {
-      stopRecording();
-    }, 5000);
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      if (Ctx) {
+        const ctx = new Ctx();
+        try {
+          if (ctx.state === "suspended") {
+            await ctx.resume();
+          }
+        } catch {}
+        audioContextRef.current = ctx;
+        const source = ctx.createMediaStreamSource(stream);
+        audioSourceRef.current = source;
+        const processor = ctx.createScriptProcessor(2048, 1, 1);
+        audioProcessorRef.current = processor;
+        processor.onaudioprocess = (event) => {
+          const input = event.inputBuffer.getChannelData(0);
+          let sum = 0;
+          for (let i = 0; i < input.length; i++) {
+            const v = input[i];
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / input.length);
+          const threshold = 0.01;
+          const now = performance.now();
+          if (rms < threshold) {
+            if (silenceStartRef.current == null) {
+              silenceStartRef.current = now;
+            } else if (now - silenceStartRef.current > 900) {
+              stopRecording();
+            }
+          } else {
+            silenceStartRef.current = null;
+          }
+        };
+        source.connect(processor);
+        processor.connect(ctx.destination);
+      }
+      stopTimerRef.current = setTimeout(() => {
+        stopRecording();
+      }, 10000);
+      window.dispatchEvent(
+        new CustomEvent("atom-ctrl-listening-state", { detail: true })
+      );
+    } catch (err) {
+      console.error("Error starting recording", err);
+      setIsListening(false);
+      cleanupStream();
+      onSpeechProcessingChange?.(false);
+      window.dispatchEvent(
+        new CustomEvent("atom-ctrl-listening-state", { detail: false })
+      );
+    }
   }, [
-    adjustHeight,
     cleanupStream,
     handleValueChange,
-    isControlled,
-    isListening,
-    onSubmit,
-    onValueChange,
     onSpeechProcessingChange,
-    speakText,
+    onSubmit,
     stopRecording,
     transcribeAudio,
+    unlockAudio,
   ]);
 
   const toggleListening = useCallback(() => {
     if (isListening) {
       stopRecording();
-    } else {
-      void unlockAudio();
-      void startRecording();
+      window.dispatchEvent(
+        new CustomEvent("atom-ctrl-listening-state", { detail: false })
+      );
+      return;
     }
-  }, [isListening, startRecording, stopRecording, unlockAudio]);
+    stopDeepgramAudio();
+    void startRecording();
+  }, [isListening, startRecording, stopRecording]);
 
+  // Listen for global toggle from HomeCloud double-tap
   useEffect(() => {
-    const handleToggle = () => {
+    const handler = () => {
       toggleListening();
     };
-    window.addEventListener("atom-ctrl-toggle-listening", handleToggle);
-    return () => window.removeEventListener("atom-ctrl-toggle-listening", handleToggle);
+    if (typeof window !== "undefined") {
+      window.addEventListener("atom-ctrl-toggle-listening", handler as EventListener);
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("atom-ctrl-toggle-listening", handler as EventListener);
+      }
+    };
   }, [toggleListening]);
 
   useEffect(() => {
@@ -381,7 +302,11 @@ export function AIInput({
       setIsListening(false);
       setIsSpeechProcessing(false);
       onSpeechProcessingChange?.(false);
-      window.dispatchEvent(new CustomEvent("atom-ctrl-listening-state", { detail: false }));
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("atom-ctrl-listening-state", { detail: false })
+        );
+      }
     };
   }, [cleanupStream, onSpeechProcessingChange, stopRecording]);
 

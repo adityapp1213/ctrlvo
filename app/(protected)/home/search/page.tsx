@@ -3,12 +3,13 @@ import { redirect } from "next/navigation";
 import { AppSidebar } from "@/components/ui/sidebar";
 import { Header } from "@/components/ui/header-1";
 import { detectIntent } from "@/app/lib/ai/genai";
-import { webSearch, imageSearch, summarizeItems } from "@/app/lib/ai/search";
+import { webSearch, imageSearch, summarizeItems, summarizeChatAnswerFromWebItems } from "@/app/lib/ai/search";
 import { youtubeSearch, YouTubeVideo } from "@/app/lib/ai/youtube";
 import { cookies, headers } from "next/headers";
 import { logUserRequest } from "@/lib/supabase-server";
 import { SearchConversationShell } from "./ai-input-footer";
 import { fetchWeatherForCity } from "@/app/lib/weather";
+import { shoppingSearch, type ShoppingProduct } from "@/app/lib/serpapi/shopping";
 
 type WeatherType = "clear" | "clouds" | "rain" | "snow" | "thunderstorm" | "mist" | "unknown";
 type WeatherData = {
@@ -60,6 +61,24 @@ function extractLocationsFromQuery(q: string): string[] {
   return Array.from(new Set(parts)).slice(0, 4);
 }
 
+function extractShoppingQuery(q: string): string | null {
+  const trimmed = (q || "").trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("Shopping ")) {
+    const rest = trimmed.slice(9).trim();
+    return rest || null;
+  }
+  const patterns = [/^shop for\s+(.+)/i, /^shopping for\s+(.+)/i, /^buy\s+(.+)/i, /^purchase\s+(.+)/i];
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (match && match[1]) {
+      const candidate = match[1].trim();
+      if (candidate) return candidate;
+    }
+  }
+  return null;
+}
+
 export default async function SearchPage({
   searchParams,
 }: {
@@ -70,7 +89,7 @@ export default async function SearchPage({
   
   const resolvedSearchParams = await searchParams;
   const q = (resolvedSearchParams?.q ?? "").toString();
-  const tab = (resolvedSearchParams?.tab ?? "results").toString();
+  const tab = (resolvedSearchParams?.tab ?? "chat").toString();
   const chatId = resolvedSearchParams?.chatId?.toString();
   const jar = await cookies();
   const aiProvider = jar.get("ai_provider")?.value === "gemini" ? "gemini" : "groq";
@@ -79,16 +98,17 @@ export default async function SearchPage({
   let searchQuery = q;
 
   let overallSummaryLines: string[] = [];
+  let summary: string | null = null;
   let webItems: { link: string; title: string; summaryLines: string[]; imageUrl?: string }[] = [];
   let mediaItems: { src: string; alt?: string }[] = [];
   let isWeatherQuery = false;
   let weatherItems: WeatherItem[] = [];
   let youtubeItems: YouTubeVideo[] = [];
   let mapLocation: string | undefined;
+  let webSearchQuery: string | null = null;
+  let shoppingItems: ShoppingProduct[] = [];
 
-  // Only perform server-side search if we don't have a chatId (meaning it's a new search)
-  // or if we want to force refresh (maybe explicit refresh button later, but for now obey chatId)
-  if (hasQuery && !chatId) {
+  if (hasQuery) {
     const rawCtx = jar.get("ai_ctx")?.value ?? "[]";
     let ctx: string[] = [];
     try {
@@ -97,20 +117,29 @@ export default async function SearchPage({
     } catch {
       ctx = [];
     }
-    const result = await detectIntent(q, ctx, aiProvider);
-    shouldShowTabs = result.shouldShowTabs;
-    searchQuery = result.searchQuery ?? q;
+    const shoppingQuery = extractShoppingQuery(q);
+    const detectQuery = shoppingQuery || q;
+    const result = await detectIntent(detectQuery, ctx, aiProvider);
+    shouldShowTabs = result.shouldShowTabs || Boolean(shoppingQuery);
+    webSearchQuery = shoppingQuery ? null : result.webSearchQuery ?? null;
+    searchQuery = shoppingQuery || result.searchQuery || detectQuery;
     overallSummaryLines = result.overallSummaryLines;
     mapLocation = result.mapLocation;
-    const lower = searchQuery.toLowerCase();
-    isWeatherQuery = /(weather|forecast|temperature|rain|snow|thunder|wind|humidity)\b/.test(lower);
+    const lower = (webSearchQuery ?? "").toLowerCase();
+    isWeatherQuery =
+      Boolean(webSearchQuery) &&
+      /(weather|forecast|temperature|rain|snow|thunder|wind|humidity)\b/.test(lower);
     
     // Check for YouTube intent
     if (result.youtubeQuery) {
        youtubeItems = await youtubeSearch(result.youtubeQuery);
     }
 
-    const nextCtx = [...ctx, q].slice(-5);
+    if (shoppingQuery) {
+      shoppingItems = await shoppingSearch(shoppingQuery, { maxResults: 4 });
+    }
+
+    const nextCtx = [...ctx, detectQuery].slice(-5);
     try {
       jar.set("ai_ctx", JSON.stringify(nextCtx), { path: "/", httpOnly: true });
     } catch {}
@@ -122,20 +151,22 @@ export default async function SearchPage({
   const shouldPrefetchTabs =
     hasQuery &&
     shouldShowTabs &&
-    !chatId &&
     !isWeatherQuery &&
-    youtubeItems.length === 0;
+    youtubeItems.length === 0 &&
+    Boolean(webSearchQuery);
 
-  if (shouldPrefetchTabs) {
+  const webQuery = webSearchQuery ?? null;
+
+  if (shouldPrefetchTabs && webQuery) {
     const [rawItems, images] = await Promise.all([
-      webSearch(searchQuery),
-      imageSearch(searchQuery),
+      webSearch(webQuery),
+      imageSearch(webQuery),
     ]);
 
     mediaItems = images;
 
     if (rawItems.length > 0) {
-      const s = await summarizeItems(rawItems, searchQuery, aiProvider);
+      const s = await summarizeItems(rawItems, webQuery, aiProvider);
       overallSummaryLines = s.overallSummaryLines.length
         ? s.overallSummaryLines
         : overallSummaryLines;
@@ -153,14 +184,15 @@ export default async function SearchPage({
           imageUrl: it.imageUrl,
         };
       });
+      summary = await summarizeChatAnswerFromWebItems(webItems, webQuery, aiProvider);
     } else if (!overallSummaryLines.length) {
       overallSummaryLines = ["No results found.", ""];
     }
-  } else if (hasQuery && !chatId && shouldShowTabs) {
+  } else if (hasQuery && shouldShowTabs && webQuery) {
     if (activeTab === "results") {
-      const rawItems = await webSearch(searchQuery);
+      const rawItems = await webSearch(webQuery);
       if (rawItems.length > 0) {
-        const s = await summarizeItems(rawItems, searchQuery, aiProvider);
+        const s = await summarizeItems(rawItems, webQuery, aiProvider);
         overallSummaryLines = s.overallSummaryLines.length
           ? s.overallSummaryLines
           : overallSummaryLines;
@@ -178,18 +210,19 @@ export default async function SearchPage({
             imageUrl: it.imageUrl,
           };
         });
+        summary = await summarizeChatAnswerFromWebItems(webItems, webQuery, aiProvider);
       } else if (!overallSummaryLines.length) {
         overallSummaryLines = ["No results found.", ""];
       }
     } else if (tab === "media") {
-      mediaItems = await imageSearch(searchQuery);
+      mediaItems = await imageSearch(webQuery);
       if (!mediaItems.length && !overallSummaryLines.length) {
         overallSummaryLines = ["No images found.", ""];
       }
     }
   }
 
-  if (hasQuery && isWeatherQuery && shouldShowTabs) {
+  if (hasQuery && isWeatherQuery && shouldShowTabs && webQuery) {
     const locs = extractLocationsFromQuery(searchQuery);
     if (locs.length) {
       const results = await Promise.all(locs.map((city) => fetchWeatherForCity(city)));
@@ -249,6 +282,7 @@ export default async function SearchPage({
           searchQuery={searchQuery}
           shouldShowTabs={shouldShowTabs}
           overallSummaryLines={overallSummaryLines}
+          summary={summary}
           webItems={webItems}
           mediaItems={mediaItems}
           isWeatherQuery={isWeatherQuery}
@@ -256,6 +290,7 @@ export default async function SearchPage({
           youtubeItems={youtubeItems}
           mapLocation={mapLocation}
           googleMapsKey={process.env.GOOGLE_MAP_API_KEY}
+          shoppingItems={shoppingItems}
         />
       </section>
     </main>

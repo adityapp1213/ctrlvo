@@ -32,11 +32,13 @@ export type ChatSession = {
   activeTabId: string | null;
   searchQuery: string;
   overallSummaryLines: string[];
+  summary?: string | null;
   webItems: any[];
   mediaItems: any[];
   isWeatherQuery?: boolean;
   weatherItems: any[];
   youtubeItems: any[];
+  shoppingItems?: any[];
   mapLocation?: string;
   googleMapsKey?: string;
   shouldShowTabs: boolean;
@@ -44,6 +46,7 @@ export type ChatSession = {
   pinnedItems?: PinnedItem[];
   conversationMemory?: string[];
   memoryWindowKey?: string | null;
+  shoppingItems?: any[];
 };
 
 function storageKeyForUser(userId: string | null | undefined) {

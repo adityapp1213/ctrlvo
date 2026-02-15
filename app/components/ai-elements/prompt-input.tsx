@@ -1129,9 +1129,6 @@ export const PromptInputSpeechButton = ({
   const chunksRef = useRef<BlobPart[]>([]);
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const CARTESIA_VERSION = "2025-04-16";
-  const CARTESIA_VOICE_ID = "5ee9feff-1265-424a-9d7f-8e4d431a12c7";
-
   const unlockAudio = useCallback(async () => {
     const w = window as unknown as {
       __atomAudioUnlocked?: boolean;
@@ -1157,108 +1154,24 @@ export const PromptInputSpeechButton = ({
     } catch {}
   }, []);
 
-  const getAccessToken = useCallback(async (): Promise<string> => {
-    const w = window as unknown as {
-      __atomCartesiaAccessTokenCache?: { token: string; expiresAt: number };
-    };
-    const cached = w.__atomCartesiaAccessTokenCache;
-    if (cached && Date.now() < cached.expiresAt - 10_000) return cached.token;
-
-    const resp = await fetch("/api/cartesia/access-token", { method: "GET" });
-    if (!resp.ok) throw new Error("cartesia_access_token_failed");
-    const data = (await resp.json()) as { token: string; expiresAt: number };
-    w.__atomCartesiaAccessTokenCache = { token: data.token, expiresAt: data.expiresAt };
-    return data.token;
-  }, []);
-
-  const stopAnyPlayingAudio = useCallback(() => {
-    const w = window as unknown as { __atomCartesiaAudio?: HTMLAudioElement };
-    if (w.__atomCartesiaAudio) {
-      w.__atomCartesiaAudio.pause();
-      w.__atomCartesiaAudio.src = "";
-      w.__atomCartesiaAudio.load();
-      w.__atomCartesiaAudio = undefined;
-    }
-  }, []);
-
   const speakWithSpeechSynthesis = useCallback((text: string) => {
-    const trimmed = (text || "").trim();
-    if (!trimmed) return;
-    if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") return;
-    try {
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(trimmed);
-      u.lang = "en-US";
-      window.speechSynthesis.speak(u);
-    } catch {}
+    // Speech synthesis disabled as per user request
   }, []);
 
   const speakText = useCallback(
     async (text: string) => {
       const trimmed = (text || "").trim();
       if (!trimmed) return;
-      try {
-        const token = await getAccessToken();
-        const ttsResp = await fetch("https://api.cartesia.ai/tts/bytes", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Cartesia-Version": CARTESIA_VERSION,
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            transcript: trimmed,
-            model_id: "sonic-3",
-            voice: { mode: "id", id: CARTESIA_VOICE_ID },
-            output_format: {
-              container: "wav",
-              encoding: "pcm_s16le",
-              sample_rate: 44100,
-            },
-          }),
-        });
-        if (!ttsResp.ok) throw new Error("cartesia_tts_failed");
-        const bytes = await ttsResp.arrayBuffer();
-        const blob = new Blob([bytes], { type: "audio/wav" });
-        const url = URL.createObjectURL(blob);
-        stopAnyPlayingAudio();
-        const audio = new Audio(url);
-        audio.muted = false;
-        audio.volume = 1;
-        (window as unknown as { __atomCartesiaAudio?: HTMLAudioElement }).__atomCartesiaAudio = audio;
-        audio.onended = () => {
-          URL.revokeObjectURL(url);
-        };
-        await unlockAudio();
-        await audio.play();
-      } catch {
-        speakWithSpeechSynthesis(trimmed);
-      }
+      speakWithSpeechSynthesis(trimmed);
     },
-    [getAccessToken, speakWithSpeechSynthesis, stopAnyPlayingAudio, unlockAudio]
+    [speakWithSpeechSynthesis]
   );
 
   const transcribeAudio = useCallback(
-    async (audioBlob: Blob): Promise<string> => {
-      const token = await getAccessToken();
-      const form = new FormData();
-      form.append("file", new File([audioBlob], "speech.webm", { type: audioBlob.type || "audio/webm" }));
-      form.append("model", "ink-whisper");
-      form.append("language", "en");
-
-      const resp = await fetch("https://api.cartesia.ai/audio/transcriptions", {
-        method: "POST",
-        headers: {
-          "Cartesia-Version": CARTESIA_VERSION,
-          Authorization: `Bearer ${token}`,
-        },
-        body: form,
-      });
-      if (!resp.ok) throw new Error("cartesia_stt_failed");
-      const data = (await resp.json()) as { text?: string; transcript?: string };
-      return (data.text || data.transcript || "").trim();
+    async (_audioBlob: Blob): Promise<string> => {
+      return "";
     },
-    [getAccessToken]
+    []
   );
 
   const cleanupStream = useCallback(() => {
@@ -1275,99 +1188,23 @@ export const PromptInputSpeechButton = ({
     chunksRef.current = [];
   }, []);
 
-  const stopRecording = useCallback(() => {
-    if (stopTimerRef.current) {
-      clearTimeout(stopTimerRef.current);
-      stopTimerRef.current = null;
-    }
-    const rec = mediaRecorderRef.current;
-    if (rec && rec.state !== "inactive") {
-      rec.stop();
-    }
+  const startRecording = useCallback(async () => {
+    // Recording disabled as per user request to remove all STT integrations
+    setIsListening(false);
   }, []);
 
-  const startRecording = useCallback(async () => {
-    if (isListening) return;
-    if (!("mediaDevices" in navigator) || !navigator.mediaDevices.getUserMedia) return;
-
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    mediaStreamRef.current = stream;
-
-    const mimeCandidates = [
-      "audio/webm;codecs=opus",
-      "audio/webm",
-      "audio/mp4",
-    ];
-    const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m));
-
-    const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-    mediaRecorderRef.current = rec;
-    chunksRef.current = [];
-
-    rec.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
-    };
-
-    rec.onstart = () => {
-      setIsListening(true);
-      window.dispatchEvent(new CustomEvent("atom-ctrl-listening-state", { detail: true }));
-    };
-
-    rec.onstop = async () => {
-      try {
-        const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
-        cleanupStream();
-        setIsListening(false);
-        window.dispatchEvent(new CustomEvent("atom-ctrl-listening-state", { detail: false }));
-        const text = await transcribeAudio(blob);
-        if (!text) {
-          await speakText("Please repeat what you said");
-          return;
-        }
-        if (textareaRef?.current) {
-          const textarea = textareaRef.current;
-          textarea.value = text;
-          textarea.dispatchEvent(new Event("input", { bubbles: true }));
-        }
-        onTranscriptionChange?.(text);
-        onFinalTranscription?.(text);
-      } catch {
-        cleanupStream();
-        setIsListening(false);
-        window.dispatchEvent(new CustomEvent("atom-ctrl-listening-state", { detail: false }));
-      }
-    };
-
-    rec.start();
-    stopTimerRef.current = setTimeout(() => {
-      stopRecording();
-    }, 5000);
-  }, [
-    cleanupStream,
-    isListening,
-    onFinalTranscription,
-    onTranscriptionChange,
-    speakText,
-    stopRecording,
-    textareaRef,
-    transcribeAudio,
-  ]);
+  const stopRecording = useCallback(() => {
+    // Recording disabled
+    setIsListening(false);
+  }, []);
 
   const toggleListening = useCallback(() => {
-    if (isListening) {
-      stopRecording();
-    } else {
-      void unlockAudio();
-      void startRecording();
-    }
-  }, [isListening, startRecording, stopRecording, unlockAudio]);
+    // Listening disabled
+    setIsListening(false);
+  }, []);
 
   useEffect(() => {
-    const handleToggle = () => {
-      toggleListening();
-    };
-    window.addEventListener("atom-ctrl-toggle-listening", handleToggle);
-    return () => window.removeEventListener("atom-ctrl-toggle-listening", handleToggle);
+    // Listener removed
   }, [toggleListening]);
 
   useEffect(() => {

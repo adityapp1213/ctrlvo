@@ -1,12 +1,19 @@
 "use server";
 
 import { detectIntent } from "@/app/lib/ai/genai";
-import { webSearch, imageSearch, summarizeItems } from "@/app/lib/ai/search";
+import {
+  webSearch,
+  imageSearch,
+  summarizeItems,
+  summarizeChatAnswerFromWebItems,
+  summarizeChatAnswerFromShoppingItems,
+} from "@/app/lib/ai/search";
 import { youtubeSearch, YouTubeVideo } from "@/app/lib/ai/youtube";
 import { fetchWeatherForCity, WeatherItem } from "@/app/lib/weather";
 import { cookies } from "next/headers";
 import { mem0AddTurn, mem0SearchForContext, type Mem0Operation } from "@/app/lib/mem0";
 import { GroqClient } from "@/app/lib/ai/groq/groq-client";
+import { shoppingSearch, type ShoppingProduct } from "@/app/lib/serpapi/shopping";
 
 function looksLikeRefersToPreviousResults(q: string): boolean {
   const raw = (q || "").trim().toLowerCase();
@@ -37,6 +44,24 @@ function extractLocationsFromQuery(q: string): string[] {
   return Array.from(new Set(parts)).slice(0, 4);
 }
 
+function extractShoppingQuery(q: string): string | null {
+  const trimmed = (q || "").trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("Shopping ")) {
+    const rest = trimmed.slice(9).trim();
+    return rest || null;
+  }
+  const patterns = [/^shop for\s+(.+)/i, /^shopping for\s+(.+)/i, /^buy\s+(.+)/i, /^purchase\s+(.+)/i];
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (match && match[1]) {
+      const candidate = match[1].trim();
+      if (candidate) return candidate;
+    }
+  }
+  return null;
+}
+
 export type DynamicSearchResult = {
   type: "text" | "search";
   content?: string;
@@ -44,10 +69,12 @@ export type DynamicSearchResult = {
   data?: {
     searchQuery: string;
     overallSummaryLines: string[];
+    summary?: string | null;
     webItems: { link: string; title: string; summaryLines: string[]; imageUrl?: string }[];
     mediaItems: { src: string; alt?: string }[];
     weatherItems: WeatherItem[];
     youtubeItems?: YouTubeVideo[];
+    shoppingItems?: ShoppingProduct[];
     shouldShowTabs: boolean;
     mapLocation?: string;
     googleMapsKey?: string;
@@ -58,6 +85,7 @@ export type PerformSearchOptions = {
   context?: string[];
   userId?: string | null;
   sessionId?: string | null;
+  shoppingLocation?: string | null;
 };
 
 export type MemoryWindowTurn = {
@@ -179,6 +207,9 @@ export async function performDynamicSearch(
   const trimmed = (query || "").trim();
   if (!trimmed) return { type: "text", content: "" };
 
+  const explicitShoppingQuery = extractShoppingQuery(trimmed);
+  const shoppingLocation = (options?.shoppingLocation || "").trim() || null;
+
   const jar = await cookies();
   const aiProvider = jar.get("ai_provider")?.value === "gemini" ? "gemini" : "groq";
 
@@ -226,9 +257,12 @@ export async function performDynamicSearch(
 
   const combinedContext = [...baseContext, ...memContext];
 
-  const intent = await detectIntent(trimmed, combinedContext, aiProvider);
+  const detectQuery = explicitShoppingQuery || trimmed;
+  const intent = await detectIntent(detectQuery, combinedContext, aiProvider);
 
-  if (!intent.shouldShowTabs) {
+  const shoppingQuery = intent.shoppingQuery || explicitShoppingQuery || null;
+
+  if (!intent.shouldShowTabs && !shoppingQuery) {
     const raw = intent.overallSummaryLines;
     const lines = Array.isArray(raw) ? raw.filter(Boolean) : [];
     const content = lines.length > 0 ? lines.join(" ") : "Cloudy could not generate a summary for this query.";
@@ -252,7 +286,12 @@ export async function performDynamicSearch(
     };
   }
 
-  let searchQuery = intent.searchQuery ?? trimmed;
+  let webQuery = intent.webSearchQuery ?? null;
+  let searchQuery = intent.searchQuery ?? detectQuery;
+  if (shoppingQuery) {
+    searchQuery = shoppingQuery;
+    webQuery = null;
+  }
   if (isAskCloudy) {
     const selected = (askCloudyContext && (askCloudyContext as any).selected) || null;
     const link =
@@ -276,12 +315,16 @@ export async function performDynamicSearch(
       }
     }
   }
+  if (isAskCloudy && !webQuery && intent.shouldShowTabs) {
+    webQuery = searchQuery;
+  }
   let overallSummaryLines = intent.overallSummaryLines;
 
-  const [rawWebItems, mediaItems, weatherItems, youtubeItems] = await Promise.all([
-    webSearch(searchQuery),
-    imageSearch(searchQuery),
+  const [rawWebItems, mediaItems, weatherItems, youtubeItems, shoppingItems] = await Promise.all([
+    webQuery ? webSearch(searchQuery) : Promise.resolve([]),
+    webQuery ? imageSearch(searchQuery) : Promise.resolve([]),
     (async () => {
+      if (!webQuery) return [];
       const lower = searchQuery.toLowerCase();
       const isWeather = /(weather|forecast|temperature|rain|snow|thunder|wind|humidity)\b/.test(lower);
       if (isWeather) {
@@ -298,9 +341,17 @@ export async function performDynamicSearch(
       }
       return [];
     })(),
+    shoppingQuery
+      ? shoppingSearch(shoppingQuery, {
+          maxResults: 4,
+          location: shoppingLocation || undefined,
+        })
+      : Promise.resolve([]),
   ]);
 
   let webItems: { link: string; title: string; summaryLines: string[]; imageUrl?: string }[] = [];
+  let summary: string | null = null;
+  const hasShopping = Array.isArray(shoppingItems) && shoppingItems.length > 0;
 
   if (rawWebItems.length > 0) {
     const s = await summarizeItems(rawWebItems, searchQuery, aiProvider);
@@ -315,6 +366,26 @@ export async function performDynamicSearch(
       const normalized = [lines[0] ?? "", lines[1] ?? "", lines[2] ?? ""];
       return { link: it.link, title: it.title, summaryLines: normalized, imageUrl: it.imageUrl };
     });
+    summary = await summarizeChatAnswerFromWebItems(webItems, searchQuery, aiProvider);
+  } else if (hasShopping) {
+    const shoppingSummary = await summarizeChatAnswerFromShoppingItems(
+      shoppingItems.map((p) => ({
+        title: p.title,
+        priceText: p.priceText,
+        price: p.price,
+        rating: p.rating,
+        reviewCount: p.reviewCount,
+        source: p.source,
+      })),
+      searchQuery,
+      aiProvider
+    );
+    if (shoppingSummary) {
+      summary = shoppingSummary;
+      overallSummaryLines = [shoppingSummary, ""];
+    } else if (!overallSummaryLines.length) {
+      overallSummaryLines = ["Found products for your request.", ""];
+    }
   } else if (!overallSummaryLines.length) {
     overallSummaryLines = ["No results found.", ""];
   }
@@ -339,10 +410,12 @@ export async function performDynamicSearch(
     data: {
       searchQuery,
       overallSummaryLines,
+      summary,
       webItems,
       mediaItems,
       weatherItems,
       youtubeItems,
+      shoppingItems,
       shouldShowTabs: true,
       mapLocation: intent.mapLocation,
       googleMapsKey: process.env.GOOGLE_MAP_API_KEY,
@@ -383,4 +456,17 @@ export async function fetchMediaTabData(searchQuery: string): Promise<{ src: str
   const q = (searchQuery || "").trim();
   if (!q) return [];
   return imageSearch(q);
+}
+
+export async function generateChatSummaryFromWebItems(
+  webItems: { link: string; title: string; summaryLines?: string[] }[],
+  searchQuery: string
+): Promise<string> {
+  const q = (searchQuery || "").trim();
+  if (!q) return "";
+  const trimmedItems = Array.isArray(webItems) ? webItems.slice(0, 3) : [];
+  if (!trimmedItems.length) return "";
+  const jar = await cookies();
+  const aiProvider = jar.get("ai_provider")?.value === "gemini" ? "gemini" : "groq";
+  return summarizeChatAnswerFromWebItems(trimmedItems, q, aiProvider);
 }

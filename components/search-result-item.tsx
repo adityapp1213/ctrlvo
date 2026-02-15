@@ -13,6 +13,16 @@ function normalizeExternalUrl(value: string | undefined) {
   }
 }
 
+function formatDisplayUrl(value: string) {
+  try {
+    const u = new URL(value);
+    const host = u.hostname.replace(/^www\./i, "");
+    return `www.${host}`;
+  } catch {
+    return value;
+  }
+}
+
 type SearchResultItemProps = {
   link: string;
   title: string;
@@ -30,13 +40,13 @@ export function SearchResultItem({
 }: SearchResultItemProps) {
   const normalizedImageUrl = normalizeExternalUrl(imageUrl);
 
-  // Extract domain for display
   let domain = "";
   try {
     domain = new URL(link).hostname;
   } catch {
     domain = link;
   }
+  const displayUrl = formatDisplayUrl(link);
 
   // Google Favicon service
   const faviconUrl = `https://www.google.com/s2/favicons?sz=64&domain=${domain}`;
@@ -61,9 +71,20 @@ export function SearchResultItem({
               loading="lazy"
             />
           </div>
-          <span className="text-xs font-medium text-muted-foreground truncate max-w-[200px]">
-            {domain}
-          </span>
+          <a
+            href={link}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => {
+              if (onClick) {
+                e.preventDefault();
+                onClick();
+              }
+            }}
+            className="text-xs font-medium text-blue-600 underline underline-offset-2 truncate max-w-[200px]"
+          >
+            {displayUrl}
+          </a>
         </div>
         
         <a 

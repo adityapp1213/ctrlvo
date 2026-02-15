@@ -40,3 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 /AtomCtrlAphaZero
+
+# clerk configuration (can include secrets)
+/.clerk/

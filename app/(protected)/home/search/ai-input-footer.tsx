@@ -5,9 +5,9 @@ import Link from "next/link";
 import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
+import { useMutation, useQuery } from "convex/react";
 import { AIInput, type AIInputSubmitMeta } from "@/components/ui/ai-input";
 import { cn } from "@/lib/utils";
-import { WeatherWidget } from "@/components/ui/weather-widget";
 import {
   Conversation,
   ConversationContent,
@@ -19,22 +19,35 @@ import {
 } from "@/components/ai-elements/message";
 import { AtomLogo } from "@/components/logo";
 import {
-  fetchMediaTabData,
-  fetchWebTabData,
   performDynamicSearch,
   extractMemoryFromWindow,
   type MemoryWindowTurn,
   type DynamicSearchResult,
 } from "@/app/actions/search";
 import { SearchResultsBlock } from "@/components/search-results-block";
-import { SearchResultItem } from "@/components/search-result-item";
 import { YouTubeVideo } from "@/app/lib/ai/youtube";
-import { CheckCircle2, Globe, Loader2, Mic, PlayIcon, Quote, Search } from "lucide-react";
-import { VideoList } from "@/components/video-list";
+import { ChevronLeft, ChevronRight, Globe, Mic, PlayIcon, Quote, X } from "lucide-react";
 import { Browser, BrowserTab } from "@/components/ui/browser";
 import { getChatSession, saveChatSession, type PinnedItem } from "@/app/lib/chat-store";
 
 import { MapBlock } from "@/components/map-block";
+import { api } from "../../../../convex/_generated/api";
+import type { Id } from "../../../../convex/_generated/dataModel";
+import {
+  InlineCitation,
+  InlineCitationCard,
+  InlineCitationCardBody,
+  InlineCitationCardTrigger,
+  InlineCitationCarousel,
+  InlineCitationCarouselContent,
+  InlineCitationCarouselHeader,
+  InlineCitationCarouselIndex,
+  InlineCitationCarouselItem,
+  InlineCitationCarouselNext,
+  InlineCitationCarouselPrev,
+  InlineCitationSource,
+} from "@/components/ai-elements/inline-citation";
+import { isVoiceSource, speakAssistantWithDeepgram } from "@/app/lib/deepgram/voice";
 
 // Ensure this component is imported only on client side or handling it correctly
 // Since SearchResultsBlock is a client component, it's fine.
@@ -58,6 +71,7 @@ type ChatMessage = {
   data?: DynamicSearchResult["data"];
   mem0Ops?: import("@/app/lib/mem0").Mem0Operation[];
   askCloudy?: AskCloudyContext | null;
+  inputsUsed?: string[];
 };
 
 type SearchConversationShellProps = {
@@ -65,6 +79,7 @@ type SearchConversationShellProps = {
   searchQuery: string;
   shouldShowTabs: boolean;
   overallSummaryLines: string[];
+  summary?: string | null;
   webItems: { link: string; title: string; summaryLines: string[]; imageUrl?: string }[];
   mediaItems: { src: string; alt?: string }[];
   isWeatherQuery?: boolean;
@@ -84,6 +99,18 @@ type SearchConversationShellProps = {
   youtubeItems?: YouTubeVideo[];
   mapLocation?: string;
   googleMapsKey?: string;
+  shoppingItems?: Array<{
+    id: string;
+    title: string;
+    link: string;
+    thumbnailUrl?: string;
+    priceText?: string;
+    price?: number | null;
+    rating?: number | null;
+    reviewCount?: number | null;
+    source?: string;
+    sourceIconUrl?: string;
+  }>;
 };
 
 type AIInputFooterProps = {
@@ -107,6 +134,25 @@ function normalizeExternalUrl(value: string | undefined) {
   }
 }
 
+function formatDisplayUrl(value: string) {
+  try {
+    const u = new URL(value);
+    const host = u.hostname.replace(/^www\./i, "");
+    return `www.${host}`;
+  } catch {
+    return value;
+  }
+}
+
+function normalizeSummaryText(value: string) {
+  return value
+    .replace(/\r?\n+/g, " ")
+    .replace(/(^|\s)[-*•]+(?=\s)/g, " ")
+    .replace(/(^|\s)\d+[.)](?=\s)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function AIInputFooter({
   onSubmit,
   inputValue,
@@ -124,7 +170,7 @@ export function AIInputFooter({
       onSubmit(q, meta);
       return;
     }
-    router.push(`/home/search?q=${encodeURIComponent(q)}&tab=results`);
+    router.push(`/home/search?q=${encodeURIComponent(q)}&tab=chat`);
   };
 
   return (
@@ -172,6 +218,10 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const { user } = useUser();
   const userId = user?.id ?? null;
+  const chatHistory = useQuery(
+    api.chat.listChatMessages,
+    userId && activeSessionId ? { userId, sessionId: activeSessionId } : "skip"
+  );
   
   // Browser state
   const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>([]);
@@ -180,6 +230,21 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [isSpeechProcessing, setIsSpeechProcessing] = useState(false);
   const [chatLoadingQuery, setChatLoadingQuery] = useState<string>("");
+  const [chatMediaLoaded, setChatMediaLoaded] = useState(0);
+  const [chatMediaTotal, setChatMediaTotal] = useState(0);
+  const [pendingMediaLoad, setPendingMediaLoad] = useState<{ messageId: number | null; total: number; loaded: number }>({
+    messageId: null,
+    total: 0,
+    loaded: 0,
+  });
+  const [pendingStream, setPendingStream] = useState<{
+    messageId: number;
+    type: "search" | "text";
+    text?: string;
+    searchQuery?: string;
+    webItems?: { link: string; title: string; summaryLines?: string[] }[];
+  } | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const pendingSpeakTextRef = useRef<string | null>(null);
   const pendingSpeakShouldSpeakRef = useRef<boolean>(false);
   const lastSpokenKeyRef = useRef<string>("");
@@ -195,12 +260,148 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
     meta: AskCloudyContext;
   } | null>(null);
   const [askCloudyContext, setAskCloudyContext] = useState<AskCloudyContext | null>(null);
+  const initialTurnPersistedRef = useRef(false);
+  const [shoppingLocation, setShoppingLocation] = useState<string>("");
+  const [shoppingLocationLoaded, setShoppingLocationLoaded] = useState(false);
+
+  const writePrompt = useMutation(api.chat.writePrompt);
+  const writeResponse = useMutation(api.chat.writeResponse);
+  const [storageError, setStorageError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const saved = window.localStorage.getItem("shopping_location") || "";
+      if (saved) {
+        setShoppingLocation(saved);
+      }
+    } catch {}
+    setShoppingLocationLoaded(true);
+  }, []);
+
+  const renderCitation = (
+    msg: ChatMessage,
+    index: number,
+    variant: "inline" | "block" = "block"
+  ) => {
+    const inputs = msg.inputsUsed ?? [];
+    const lowerInputs = inputs
+      .map((line) => line.toLowerCase())
+      .filter(Boolean);
+
+    const usedUserMessages =
+      lowerInputs.length === 0
+        ? []
+        : messages
+            .slice(0, index)
+            .filter(
+              (m) =>
+                m.role === "user" &&
+                m.content &&
+                m.content.trim().length > 0
+            )
+            .filter((m) => {
+              const text = m.content.toLowerCase();
+              return lowerInputs.some((li) => {
+                const s = li.slice(0, 80);
+                if (!s) return false;
+                return text.includes(s) || s.includes(text);
+              });
+            });
+
+    const webItemsForMsg =
+      msg.type === "search" && msg.data ? msg.data.webItems ?? [] : [];
+    const topWebItems = webItemsForMsg.slice(0, 3);
+
+    if (usedUserMessages.length === 0 && topWebItems.length === 0) {
+      return null;
+    }
+
+    const lastUserContent =
+      usedUserMessages[usedUserMessages.length - 1]?.content ?? "";
+
+    const triggerSources: string[] = [];
+    if (lastUserContent) triggerSources.push(lastUserContent);
+    if (topWebItems.length) {
+      triggerSources.push(
+        ...topWebItems.map((item) => item.title || item.link || "")
+      );
+    }
+
+    const slideItems: {
+      key: string;
+      kind: "user" | "web";
+      id?: number;
+      title: string;
+      url?: string;
+      description?: string;
+    }[] = [];
+
+    usedUserMessages.forEach((u) => {
+      slideItems.push({
+        key: `user-${u.id}`,
+        kind: "user",
+        id: u.id,
+        title: "User input",
+        description: u.content,
+      });
+    });
+
+    topWebItems.forEach((item, i) => {
+      slideItems.push({
+        key: `web-${i}-${item.link}`,
+        kind: "web",
+        title: item.title || item.link || "Source",
+        url: item.link,
+        description: item.summaryLines?.[0],
+      });
+    });
+
+    const citation = (
+      <InlineCitation
+        className={
+          variant === "inline" ? "ml-2 align-baseline" : "mt-3 inline-flex"
+        }
+      >
+        <InlineCitationCard>
+          <InlineCitationCardTrigger sources={triggerSources} />
+          <InlineCitationCardBody>
+            <InlineCitationCarousel>
+              <InlineCitationCarouselHeader>
+                <InlineCitationCarouselPrev />
+                <InlineCitationCarouselNext />
+                <InlineCitationCarouselIndex />
+              </InlineCitationCarouselHeader>
+              <InlineCitationCarouselContent>
+                {slideItems.map((item) => (
+                  <InlineCitationCarouselItem key={item.key}>
+                    <InlineCitationSource
+                      title={item.title}
+                      url={item.url}
+                      description={item.description}
+                    />
+                  </InlineCitationCarouselItem>
+                ))}
+              </InlineCitationCarouselContent>
+            </InlineCitationCarousel>
+          </InlineCitationCardBody>
+        </InlineCitationCard>
+      </InlineCitation>
+    );
+
+    if (variant === "inline") {
+      return citation;
+    }
+
+    return <div className="mt-3">{citation}</div>;
+  };
 
   // Content state
   const [contentState, setContentState] = useState({
      searchQuery: props.searchQuery,
      shouldShowTabs: props.shouldShowTabs,
      overallSummaryLines: props.overallSummaryLines,
+     summary: props.summary ?? null,
      webItems: props.webItems,
      mediaItems: props.mediaItems,
      isWeatherQuery: props.isWeatherQuery,
@@ -210,120 +411,389 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
      googleMapsKey: props.googleMapsKey,
      tab: props.tab,
      pinnedItems: [] as PinnedItem[],
+     shoppingItems: props.shoppingItems ?? [],
   });
 
-  useEffect(() => {
-      if (chatId) {
-         if (!userId) return;
-         const session = getChatSession(userId, chatId);
-        if (session) {
-           setActiveSessionId(session.id);
-           setMessages(session.messages as ChatMessage[]);
-           setBrowserTabs(session.browserTabs);
-           setActiveTabId(session.activeTabId);
-           setPinnedItems(session.pinnedItems ?? []);
-           setConversationMemory(session.conversationMemory ?? []);
-           setMemoryWindowKey(session.memoryWindowKey ?? null);
-           setContentState({
-               searchQuery: session.searchQuery,
-               shouldShowTabs: session.shouldShowTabs,
-               overallSummaryLines: session.overallSummaryLines,
-               webItems: session.webItems,
-               mediaItems: session.mediaItems,
-               isWeatherQuery: session.isWeatherQuery,
-               weatherItems: session.weatherItems,
-               youtubeItems: session.youtubeItems,
-               mapLocation: session.mapLocation,
-               googleMapsKey: session.googleMapsKey,
-               tab: session.tab,
-               pinnedItems: session.pinnedItems ?? [],
-            });
-            return;
-         } else if (props.searchQuery) {
-             // Session missing, retry as fresh search
-             router.replace(`/home/search?q=${encodeURIComponent(props.searchQuery)}&tab=${props.tab}`);
-             return;
-         } else {
-            setActiveSessionId(null);
-            setMessages([]);
-            setBrowserTabs([]);
-            setActiveTabId(null);
-            setConversationMemory([]);
-            setMemoryWindowKey(null);
-            const url = `/home/search`;
-            window.history.replaceState({ ...window.history.state, as: url, url }, "", url);
-            return;
-         }
-      }
-      
-      if (props.searchQuery && !chatId && userId) {
-        const newId = Date.now().toString();
-        setActiveSessionId(newId);
-        const newUrl = `/home/search?q=${encodeURIComponent(props.searchQuery)}&tab=${props.tab}&chatId=${newId}`;
-        window.history.replaceState({ ...window.history.state, as: newUrl, url: newUrl }, "", newUrl);
-        return;
-     }
+  const {
+    searchQuery,
+    shouldShowTabs,
+    overallSummaryLines,
+    summary,
+    webItems,
+    mediaItems,
+    isWeatherQuery,
+    weatherItems,
+    youtubeItems,
+    mapLocation,
+    googleMapsKey,
+    tab,
+    shoppingItems,
+  } = contentState;
 
-     if (!chatId && !props.searchQuery) {
-        setActiveSessionId(null);
-        setMessages([]);
-        setBrowserTabs([]);
-        setActiveTabId(null);
-        setConversationMemory([]);
-        setMemoryWindowKey(null);
+  useEffect(() => {
+    if (chatId) {
+      setActiveSessionId(chatId);
+      if (!userId) return;
+      const session = getChatSession(userId, chatId);
+      if (session) {
+        setMessages(session.messages as ChatMessage[]);
+        setBrowserTabs(session.browserTabs);
+        setActiveTabId(session.activeTabId);
+        setPinnedItems(session.pinnedItems ?? []);
+        setConversationMemory(session.conversationMemory ?? []);
+        setMemoryWindowKey(session.memoryWindowKey ?? null);
         setContentState({
-             searchQuery: "",
-             shouldShowTabs: false,
-             overallSummaryLines: [],
-             webItems: [],
-             mediaItems: [],
-             isWeatherQuery: false,
-             weatherItems: [],
-             youtubeItems: [],
-             mapLocation: undefined,
-             googleMapsKey: undefined,
-             tab: "results",
-             pinnedItems: [],
-         });
-         setPinnedItems([]);
-     }
+          searchQuery: session.searchQuery,
+          shouldShowTabs: session.shouldShowTabs,
+          overallSummaryLines: session.overallSummaryLines,
+          summary: session.summary ?? null,
+          webItems: session.webItems,
+          mediaItems: session.mediaItems,
+          isWeatherQuery: session.isWeatherQuery,
+          weatherItems: session.weatherItems,
+          youtubeItems: session.youtubeItems,
+          mapLocation: session.mapLocation,
+          googleMapsKey: session.googleMapsKey,
+          tab: session.tab,
+          pinnedItems: session.pinnedItems ?? [],
+            shoppingItems: Array.isArray((session as any).shoppingItems) ? (session as any).shoppingItems : [],
+        });
+      }
+      return;
+    }
+
+    if (props.searchQuery && !chatId && userId) {
+      const newId = Date.now().toString();
+      setActiveSessionId(newId);
+      const newUrl = `/home/search?q=${encodeURIComponent(props.searchQuery)}&tab=${props.tab}&chatId=${newId}`;
+      window.history.replaceState(
+        { ...(window.history.state || {}), as: newUrl, url: newUrl },
+        "",
+        newUrl
+      );
+      return;
+    }
+
+    if (!chatId && !props.searchQuery) {
+      setActiveSessionId(null);
+      setMessages([]);
+      setBrowserTabs([]);
+      setActiveTabId(null);
+      setConversationMemory([]);
+      setMemoryWindowKey(null);
+      setContentState({
+        searchQuery: "",
+        shouldShowTabs: false,
+        overallSummaryLines: [],
+        summary: null,
+        webItems: [],
+        mediaItems: [],
+        isWeatherQuery: false,
+        weatherItems: [],
+        youtubeItems: [],
+        mapLocation: undefined,
+        googleMapsKey: undefined,
+        tab: "chat",
+        pinnedItems: [],
+        shoppingItems: [],
+      });
+      setPinnedItems([]);
+    }
   }, [chatId, userId, props.searchQuery, props.tab]);
 
   useEffect(() => {
-     if (!userId) return;
-     if (!activeSessionId) return;
-     if (messages.length === 0 && !contentState.searchQuery) return;
-     saveChatSession(userId, {
-        id: activeSessionId,
-        title: contentState.searchQuery || "New Chat",
-        timestamp: Date.now(),
-        messages: messages as any,
-        browserTabs,
-        activeTabId,
-        ...contentState,
-        pinnedItems,
-        conversationMemory,
-        memoryWindowKey,
-     });
+    if (!userId || !activeSessionId) return;
+    if (!chatHistory) return;
+    if (messages.length > 0) return;
+
+    const prompts = Array.isArray(chatHistory.prompts)
+      ? chatHistory.prompts
+      : [];
+    const responses = Array.isArray(chatHistory.responses)
+      ? chatHistory.responses
+      : [];
+
+    if (!prompts.length && !responses.length) return;
+
+    const promptsById = new Map<string, any>();
+    prompts.forEach((p: any) => {
+      promptsById.set(p._id, p);
+    });
+
+    const responsesByPrompt = new Map<string, any[]>();
+    const orphanResponses: any[] = [];
+
+    responses.forEach((r: any) => {
+      const pid = r.promptId as string | null;
+      if (!pid) {
+        orphanResponses.push(r);
+        return;
+      }
+      if (!responsesByPrompt.has(pid)) {
+        responsesByPrompt.set(pid, []);
+      }
+      responsesByPrompt.get(pid)!.push(r);
+    });
+
+    const sortedPrompts = [...prompts].sort((a: any, b: any) => {
+      const aCount = typeof a.countNo === "number" ? a.countNo : null;
+      const bCount = typeof b.countNo === "number" ? b.countNo : null;
+      if (aCount !== null && bCount !== null && aCount !== bCount) {
+        return aCount - bCount;
+      }
+      return Number(a.createdAt ?? 0) - Number(b.createdAt ?? 0);
+    });
+
+    const sortedOrphanResponses = orphanResponses.sort(
+      (a, b) => Number(a.createdAt ?? 0) - Number(b.createdAt ?? 0)
+    );
+
+    const rebuilt: ChatMessage[] = [];
+    let nextId = Date.now() - 1000 * (sortedPrompts.length + sortedOrphanResponses.length);
+
+    sortedPrompts.forEach((p: any) => {
+      const userContent = (p.content || "").toString();
+      if (userContent) {
+        rebuilt.push({
+          id: nextId++,
+          role: "user",
+          content: userContent,
+          type: "text",
+        });
+      }
+
+      const respList = (responsesByPrompt.get(p._id) || []).sort(
+        (a, b) => Number(a.createdAt ?? 0) - Number(b.createdAt ?? 0)
+      );
+
+      respList.forEach((r) => {
+        const hasSearchData =
+          r.responseType === "search" &&
+          r.data &&
+          typeof r.data === "object";
+        rebuilt.push({
+          id: nextId++,
+          role: "assistant",
+          content: hasSearchData ? (r.content || "").toString() : (r.content || "").toString(),
+          type: hasSearchData ? "search" : "text",
+          data: hasSearchData
+            ? (r.data as DynamicSearchResult["data"])
+            : undefined,
+        });
+      });
+    });
+
+    sortedOrphanResponses.forEach((r) => {
+      const hasSearchData =
+        r.responseType === "search" &&
+        r.data &&
+        typeof r.data === "object";
+      rebuilt.push({
+        id: nextId++,
+        role: "assistant",
+        content: hasSearchData ? (r.content || "").toString() : (r.content || "").toString(),
+        type: hasSearchData ? "search" : "text",
+        data: hasSearchData
+          ? (r.data as DynamicSearchResult["data"])
+          : undefined,
+      });
+    });
+
+    if (rebuilt.length > 0) {
+      setMessages(rebuilt);
+    }
+  }, [chatHistory, userId, activeSessionId, messages.length]);
+
+  // Removed Convex loader effect to restore original chat logic
+
+  useEffect(() => {
+    const q = (searchQuery || "").trim();
+    if (!q) return;
+    if (!userId || !activeSessionId) return;
+    if (!chatHistory) return;
+
+    const prompts = Array.isArray(chatHistory.prompts) ? chatHistory.prompts : [];
+    const responses = Array.isArray(chatHistory.responses) ? chatHistory.responses : [];
+
+    if (prompts.length > 0 || responses.length > 0) {
+      initialTurnPersistedRef.current = true;
+      return;
+    }
+
+    if (initialTurnPersistedRef.current) return;
+
+    const hasResultData =
+      shouldShowTabs ||
+      (Array.isArray(webItems) && webItems.length > 0) ||
+      (Array.isArray(mediaItems) && mediaItems.length > 0) ||
+      (Array.isArray(youtubeItems) && youtubeItems.length > 0) ||
+      (Array.isArray(weatherItems) && weatherItems.length > 0) ||
+      Boolean(mapLocation) ||
+      overallSummaryLines.some((l) => (l || "").trim().length > 0);
+
+    const hasSummaryForStore =
+      !shouldShowTabs ||
+      (summary || "").trim().length > 0 ||
+      !(Array.isArray(webItems) && webItems.length > 0);
+
+    if (!hasResultData || !hasSummaryForStore) return;
+
+    initialTurnPersistedRef.current = true;
+
+    const createdAt = Date.now();
+    const summaryText =
+      overallSummaryLines.filter(Boolean).join(" ") ||
+      (Array.isArray(youtubeItems) && youtubeItems.length > 0
+        ? `Here are your vids on ${searchQuery}`
+        : "");
+
+    const searchData = {
+      searchQuery,
+      overallSummaryLines,
+      summary,
+      webItems,
+      mediaItems,
+      weatherItems,
+      youtubeItems,
+      shoppingItems,
+      shouldShowTabs,
+      mapLocation,
+      googleMapsKey,
+    };
+
+    setMessages((prev) => {
+      if (prev.length > 0) return prev;
+      const baseId = createdAt;
+      const assistantMessage: ChatMessage =
+        shouldShowTabs ||
+        (Array.isArray(webItems) && webItems.length > 0) ||
+        (Array.isArray(mediaItems) && mediaItems.length > 0) ||
+        (Array.isArray(youtubeItems) && youtubeItems.length > 0) ||
+        (Array.isArray(weatherItems) && weatherItems.length > 0) ||
+        Boolean(mapLocation)
+          ? {
+              id: baseId + 1,
+              role: "assistant",
+              content: summaryText,
+              type: "search",
+              data: searchData,
+            }
+          : {
+              id: baseId + 1,
+              role: "assistant",
+              content: summaryText,
+              type: "text",
+            };
+
+      return [
+        {
+          id: baseId,
+          role: "user",
+          content: q,
+          type: "text",
+        },
+        assistantMessage,
+      ];
+    });
+
+    void (async () => {
+      let promptId: Id<"user_prompts"> | null = null;
+      const promptArgs = {
+        userId,
+        sessionId: activeSessionId,
+        promptText: q,
+        source: "text" as const,
+        createdAt,
+        searchQuery: searchQuery || undefined,
+      };
+      try {
+        const res = await writePrompt(promptArgs);
+        promptId = (res as { promptId?: Id<"user_prompts"> }).promptId ?? null;
+      } catch {
+        try {
+          const res = await writePrompt(promptArgs);
+          promptId = (res as { promptId?: Id<"user_prompts"> }).promptId ?? null;
+        } catch (err) {
+          console.error("Failed to save initial prompt", err);
+          setStorageError("Some messages could not be saved. Check your connection.");
+        }
+      }
+
+      const responseArgs = {
+        userId,
+        sessionId: activeSessionId,
+        promptId: promptId ?? undefined,
+        responseType: "search" as const,
+        content: summaryText,
+        data: searchData,
+        createdAt: createdAt + 1,
+      };
+
+      try {
+        await writeResponse(responseArgs);
+      } catch {
+        try {
+          await writeResponse(responseArgs);
+        } catch (err) {
+          console.error("Failed to save initial response", err);
+          setStorageError("Some messages could not be saved. Check your connection.");
+        }
+      }
+    })();
   }, [
-     userId,
-     activeSessionId,
-     messages,
-     browserTabs,
-     activeTabId,
-     contentState,
-     pinnedItems,
-     conversationMemory,
-     memoryWindowKey,
+    userId,
+    activeSessionId,
+    searchQuery,
+    shouldShowTabs,
+    overallSummaryLines,
+    summary,
+    webItems,
+    mediaItems,
+    weatherItems,
+    youtubeItems,
+    mapLocation,
+    googleMapsKey,
+    writePrompt,
+    writeResponse,
+    chatHistory,
   ]);
 
-  const { searchQuery, shouldShowTabs, overallSummaryLines, webItems, mediaItems, isWeatherQuery, weatherItems, youtubeItems, mapLocation, googleMapsKey, tab } = contentState;
-  const primaryTab: "results" | "media" = tab === "media" ? "media" : "results";
+  useEffect(() => {
+    if (!userId) return;
+    if (!activeSessionId) return;
+    if (messages.length === 0 && !contentState.searchQuery) return;
+    saveChatSession(userId, {
+      id: activeSessionId,
+      title: contentState.searchQuery || "New Chat",
+      timestamp: Date.now(),
+      messages: messages as any,
+      browserTabs,
+      activeTabId,
+      ...contentState,
+      pinnedItems,
+      conversationMemory,
+      memoryWindowKey,
+    });
+  }, [
+    userId,
+    activeSessionId,
+    messages,
+    browserTabs,
+    activeTabId,
+    contentState,
+    pinnedItems,
+    conversationMemory,
+    memoryWindowKey,
+  ]);
+
+  const primaryTab: "chat" | "results" | "media" =
+    tab === "media" ? "media" : tab === "chat" ? "chat" : "results";
 
   useEffect(() => {
     const q = (searchQuery || "").trim();
     if (!q) return;
     if (isChatLoading) return;
+    if (!voiceParam) return;
 
     let toSpeak = "";
     if (Array.isArray(youtubeItems) && youtubeItems.length > 0) {
@@ -338,33 +808,19 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
       toSpeak = overallSummaryLines.filter(Boolean).join(" ");
     }
 
-    toSpeak = (toSpeak || "").trim();
+    toSpeak = stripCloudyMarkersForSpeech(toSpeak);
     if (!toSpeak) return;
     const mode = Array.isArray(youtubeItems) && youtubeItems.length > 0 ? "yt" : shouldShowTabs ? "tabs" : "text";
     const key = `initial:${q}:${mode}:${toSpeak.slice(0, 80)}`;
     if (lastSpokenKeyRef.current === key) return;
     lastSpokenKeyRef.current = key;
-    pendingSpeakShouldSpeakRef.current = voiceParam;
-    pendingSpeakTextRef.current = toSpeak;
-
-    if (voiceParam && typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      params.delete("voice");
-      const qs = params.toString();
-      const nextUrl = qs ? `/home/search?${qs}` : "/home/search";
-      window.history.replaceState(
-        { ...window.history.state, as: nextUrl, url: nextUrl },
-        "",
-        nextUrl
-      );
-    }
+    void speakAssistantWithDeepgram(toSpeak);
   }, [isChatLoading, overallSummaryLines, searchQuery, shouldShowTabs, voiceParam, webItems, youtubeItems]);
 
   useEffect(() => {
     if (isSpeechProcessing) setActiveInputSource("voice");
   }, [isSpeechProcessing]);
 
-  const prefetchRef = useRef<{ query: string; web: boolean; media: boolean } | null>(null);
   const [bootStatus, setBootStatus] = useState<{ query: string; webDone: boolean; mediaDone: boolean }>(() => {
     const q = (props.searchQuery || "").trim();
     return {
@@ -373,6 +829,12 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
       mediaDone: props.mediaItems.length > 0,
     };
   });
+  const [chatSummaryStatus, setChatSummaryStatus] = useState<"idle" | "loading" | "ready">("idle");
+  const summaryAttemptRef = useRef<string>("");
+  const summaryStreamAbortRef = useRef<AbortController | null>(null);
+  const messageStreamAbortRef = useRef<AbortController | null>(null);
+  const streamTaskRef = useRef(0);
+  const deferChatLoadingRef = useRef(false);
 
   useEffect(() => {
     const q = (searchQuery || "").trim();
@@ -380,11 +842,166 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
       setBootStatus({ query: "", webDone: true, mediaDone: true });
       return;
     }
+    const hasServerSnapshot =
+      (props.searchQuery || "").trim() === q && !isChatLoading;
+    const hasWebData =
+      webItems.length > 0 ||
+      overallSummaryLines.some((line) => (line || "").trim().length > 0) ||
+      (summary || "").trim().length > 0 ||
+      hasServerSnapshot;
+    const hasMediaData = mediaItems.length > 0;
     setBootStatus((prev) => {
-      if (prev.query === q) return prev;
-      return { query: q, webDone: webItems.length > 0, mediaDone: mediaItems.length > 0 };
+      if (prev.query === q) {
+        return {
+          query: q,
+          webDone: prev.webDone || hasWebData,
+          mediaDone: prev.mediaDone || hasMediaData,
+        };
+      }
+      return { query: q, webDone: hasWebData, mediaDone: hasMediaData };
     });
-  }, [searchQuery, webItems.length, mediaItems.length]);
+  }, [searchQuery, webItems.length, mediaItems.length, overallSummaryLines, summary, props.searchQuery, isChatLoading]);
+
+  useEffect(() => {
+    summaryAttemptRef.current = "";
+    setChatSummaryStatus("idle");
+  }, [searchQuery]);
+
+  useEffect(() => {
+    const q = (searchQuery || "").trim();
+    if (!q || !shouldShowTabs) return;
+    if (summary && summary.trim().length > 0) {
+      setChatSummaryStatus("ready");
+      summaryAttemptRef.current = q;
+      return;
+    }
+    if (!webItems.length) {
+      setChatSummaryStatus("ready");
+      return;
+    }
+    if (!bootStatus.webDone) return;
+    if (summaryAttemptRef.current === q) return;
+    if (chatSummaryStatus === "loading") return;
+    setChatSummaryStatus("loading");
+    summaryAttemptRef.current = q;
+    summaryStreamAbortRef.current?.abort();
+    const controller = new AbortController();
+    summaryStreamAbortRef.current = controller;
+    void (async () => {
+      try {
+        const resp = await fetch("/api/ai/summary-stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            searchQuery: q,
+            webItems: webItems.map((it) => ({
+              link: it.link,
+              title: it.title,
+              summaryLines: it.summaryLines,
+            })),
+          }),
+          signal: controller.signal,
+        });
+        if (!resp.ok || !resp.body) {
+          throw new Error("stream_failed");
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          if (!chunk) continue;
+          buffer += chunk;
+          setContentState((prev) => {
+            if ((prev.searchQuery || "").trim() !== q) return prev;
+            return { ...prev, summary: buffer };
+          });
+        }
+      } catch {
+      } finally {
+        setChatSummaryStatus("ready");
+      }
+    })();
+    return () => controller.abort();
+  }, [searchQuery, shouldShowTabs, summary, webItems, chatSummaryStatus, bootStatus.webDone]);
+
+  useEffect(() => {
+    if (!pendingStream) return;
+    if (pendingMediaLoad.messageId !== null && pendingMediaLoad.messageId !== pendingStream.messageId) return;
+
+    streamTaskRef.current += 1;
+    const taskId = streamTaskRef.current;
+    deferChatLoadingRef.current = false;
+    setIsChatLoading(false);
+    setActiveInputSource(null);
+
+    messageStreamAbortRef.current?.abort();
+    const controller = new AbortController();
+    messageStreamAbortRef.current = controller;
+
+    const run = async () => {
+      if (pendingStream.type === "text") {
+        const text = String(pendingStream.text ?? "");
+        const parts = text.split(/(\s+)/);
+        let buffer = "";
+        for (const part of parts) {
+          if (!part) continue;
+          if (streamTaskRef.current !== taskId) return;
+          buffer += part;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === pendingStream.messageId ? { ...m, content: buffer } : m))
+          );
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        }
+        setPendingStream(null);
+        return;
+      }
+
+      const q = String(pendingStream.searchQuery ?? "").trim();
+      const items = Array.isArray(pendingStream.webItems) ? pendingStream.webItems : [];
+      if (!q || items.length === 0) {
+        setPendingStream(null);
+        return;
+      }
+      try {
+        const resp = await fetch("/api/ai/summary-stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ searchQuery: q, webItems: items }),
+          signal: controller.signal,
+        });
+        if (!resp.ok || !resp.body) {
+          throw new Error("stream_failed");
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          if (!chunk) continue;
+          buffer += chunk;
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== pendingStream.messageId || m.type !== "search" || !m.data) return m;
+              return { ...m, data: { ...m.data, summary: buffer } };
+            })
+          );
+        }
+      } catch {
+      } finally {
+        setPendingStream(null);
+      }
+    };
+
+    void run();
+
+    return () => controller.abort();
+  }, [pendingStream, pendingMediaLoad.messageId]);
+
 
   useEffect(() => {
     const handleSelectionCheck = () => {
@@ -478,62 +1095,6 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
     };
   }, []);
 
-  useEffect(() => {
-    const q = (searchQuery || "").trim();
-    if (!shouldShowTabs || !q) return;
-    if (isWeatherQuery) return;
-    if (Array.isArray(youtubeItems) && youtubeItems.length > 0) return;
-
-    if (!prefetchRef.current || prefetchRef.current.query !== q) {
-      prefetchRef.current = { query: q, web: false, media: false };
-    }
-
-    let cancelled = false;
-    const state = prefetchRef.current;
-
-    void (async () => {
-      if (!state || state.web || webItems.length > 0) return;
-      state.web = true;
-      let data: { overallSummaryLines: string[]; webItems: { link: string; title: string; summaryLines: string[]; imageUrl?: string }[] } = {
-        overallSummaryLines: [],
-        webItems: [],
-      };
-      try {
-        data = await fetchWebTabData(q);
-      } catch {
-        data = { overallSummaryLines: [], webItems: [] };
-      }
-      if (cancelled) return;
-      setContentState((prev) => {
-        if ((prev.searchQuery || "").trim() !== q) return prev;
-        if (prev.webItems.length > 0) return prev;
-        return { ...prev, overallSummaryLines: data.overallSummaryLines, webItems: data.webItems };
-      });
-      setBootStatus((prev) => ((prev.query || "").trim() === q ? { ...prev, webDone: true } : prev));
-    })();
-
-    void (async () => {
-      if (!state || state.media || mediaItems.length > 0) return;
-      state.media = true;
-      let items: { src: string; alt?: string }[] = [];
-      try {
-        items = await fetchMediaTabData(q);
-      } catch {
-        items = [];
-      }
-      if (cancelled) return;
-      setContentState((prev) => {
-        if ((prev.searchQuery || "").trim() !== q) return prev;
-        if (prev.mediaItems.length > 0) return prev;
-        return { ...prev, mediaItems: items };
-      });
-      setBootStatus((prev) => ((prev.query || "").trim() === q ? { ...prev, mediaDone: true } : prev));
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [shouldShowTabs, searchQuery, isWeatherQuery, youtubeItems, webItems.length, mediaItems.length]);
 
   const sources = (() => {
     const hosts: string[] = [];
@@ -547,15 +1108,8 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
     return hosts;
   })();
 
-  const showBootOverlay =
-    shouldShowTabs &&
-    Boolean((searchQuery || "").trim()) &&
-    !isWeatherQuery &&
-    !(Array.isArray(youtubeItems) && youtubeItems.length > 0) &&
-    ((bootStatus.query || "").trim() === (searchQuery || "").trim()) &&
-    (!bootStatus.webDone || !bootStatus.mediaDone);
 
-  const handlePrimaryTabChange = (nextTab: "results" | "media") => {
+  const handlePrimaryTabChange = (nextTab: "chat" | "results" | "media") => {
     setContentState((prev) => ({ ...prev, tab: nextTab }));
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -625,56 +1179,17 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
 
   // playingVideoId moved to VideoList component
 
-  const CARTESIA_VERSION = "2025-04-16";
-  const CARTESIA_VOICE_ID = "a167e0f3-df7e-4d52-a9c3-f949145efdab";
-
-  const humanizeCartesiaTranscript = useCallback((text: string) => {
-    const raw = (text || "").trim();
-    if (!raw) return raw;
-
-    const hasEmotion = /<emotion\s+value\s*=\s*["'][^"']+["']\s*\/?>/i.test(raw);
-    const inferEmotion = (t: string) => {
-      const lower = t.toLowerCase();
-      if (lower.includes("sorry") || lower.includes("apolog")) return "apologetic";
-      if (lower.includes("thank") || lower.includes("grateful")) return "grateful";
-      if (lower.includes("wow") || lower.includes("awesome") || lower.includes("amazing") || lower.includes("great") || /!/.test(t))
-        return "excited";
-      if (t.trim().endsWith("?")) return "curious";
-      if (lower.includes("scared") || lower.includes("afraid")) return "scared";
-      if (lower.includes("angry") || lower.includes("mad")) return "angry";
-      return "content";
-    };
-
-    const emotion = inferEmotion(raw);
-    let out = hasEmotion ? raw : `<emotion value="${emotion}" />${raw}`;
-
-    if (!/\[laughter\]/i.test(out) && emotion === "excited") {
-      const serious = /\b(error|failed|cannot|can't|unable|sorry)\b/i.test(raw);
-      if (!serious) {
-        const firstPunct = out.slice(0, 200).search(/[.!?]/);
-        if (firstPunct >= 0) {
-          out =
-            out.slice(0, firstPunct + 1) +
-            " [laughter]<break time=\"200ms\"/>" +
-            out.slice(firstPunct + 1).replace(/^\s+/, "");
-        }
-      }
-    }
-
-    if (!/\(ahem\)|\*cough\*/i.test(out)) {
-      const lower = raw.toLowerCase();
-      if (lower.startsWith("actually") || lower.startsWith("well,") || lower.startsWith("so,")) {
-        out = out.replace(/^(\s*<emotion[^>]*\/>\s*)/i, `$1(ahem)<break time="200ms"/>`);
-      }
-    }
-
-    out = out.replace(/([.!?])\s+(?=[A-Z0-9])/g, `$1<break time="250ms"/>`);
-    out = out.replace(/,\s+(?=[^\s<])/g, `,<break time="150ms"/>`);
-    out = out.replace(/:\s+(?=[^\s<])/g, `:<break time="200ms"/>`);
-
-    out = out.replace(/(?:<break time="[^"]+"\/>){2,}/g, (m) => m.match(/<break time="[^"]+"\/>/)?.[0] ?? m);
-    return out.trim();
-  }, []);
+  function stripCloudyMarkersForSpeech(text: string): string {
+    let value = (text || "").trim();
+    if (!value) return "";
+    value = value.replace(/<(https?:\/\/[^>|]+)\|([^>]+)>/g, "$2");
+    value = value.replace(/<(https?:\/\/[^>]+)>/g, "");
+    value = value.replace(/\*\*(.*?)\*\*/g, "$1");
+    value = value.replace(/i\*(.*?)\*i/g, "$1");
+    value = value.replace(/\[(\d+)\]/g, "");
+    value = value.replace(/\s+/g, " ").trim();
+    return value;
+  }
 
   const unlockAudio = useCallback(async () => {
     const w = window as unknown as {
@@ -702,84 +1217,13 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
   }, []);
 
   const speakWithSpeechSynthesis = useCallback((text: string) => {
-    const trimmed = (text || "").trim();
-    if (!trimmed) return;
-    if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") return;
-    try {
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(trimmed);
-      u.lang = "en-US";
-      window.speechSynthesis.speak(u);
-    } catch {}
+    const cleaned = stripCloudyMarkersForSpeech(text);
+    if (!cleaned) return;
+    void speakAssistantWithDeepgram(cleaned);
   }, []);
 
-  const getCartesiaAccessToken = useCallback(async (): Promise<string> => {
-    const w = window as unknown as {
-      __atomCartesiaAccessTokenCache?: { token: string; expiresAt: number };
-    };
-    const cached = w.__atomCartesiaAccessTokenCache;
-    if (cached && Date.now() < cached.expiresAt - 10_000) return cached.token;
+  // speakWithCartesia definition removed
 
-    const resp = await fetch("/api/cartesia/access-token", { method: "GET" });
-    if (!resp.ok) throw new Error("cartesia_access_token_failed");
-    const data = (await resp.json()) as { token: string; expiresAt: number };
-    w.__atomCartesiaAccessTokenCache = { token: data.token, expiresAt: data.expiresAt };
-    return data.token;
-  }, []);
-
-  const speakWithCartesia = useCallback(
-    async (text: string) => {
-      const trimmed = (text || "").trim();
-      if (!trimmed) return;
-      try {
-        const transcript = humanizeCartesiaTranscript(trimmed);
-        const token = await getCartesiaAccessToken();
-
-        const ttsResp = await fetch("https://api.cartesia.ai/tts/bytes", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Cartesia-Version": CARTESIA_VERSION,
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            transcript,
-            model_id: "sonic-3",
-            voice: { mode: "id", id: CARTESIA_VOICE_ID },
-            output_format: {
-              container: "wav",
-              encoding: "pcm_s16le",
-              sample_rate: 44100,
-            },
-          }),
-        });
-
-        if (!ttsResp.ok) throw new Error("cartesia_tts_failed");
-
-        const bytes = await ttsResp.arrayBuffer();
-        const blob = new Blob([bytes], { type: "audio/wav" });
-        const url = URL.createObjectURL(blob);
-
-        const w = window as unknown as { __atomCartesiaAudio?: HTMLAudioElement };
-        if (w.__atomCartesiaAudio) {
-          w.__atomCartesiaAudio.pause();
-          w.__atomCartesiaAudio.src = "";
-          w.__atomCartesiaAudio.load();
-        }
-
-        const audio = new Audio(url);
-        audio.muted = false;
-        audio.volume = 1;
-        w.__atomCartesiaAudio = audio;
-        audio.onended = () => URL.revokeObjectURL(url);
-        await unlockAudio();
-        await audio.play();
-      } catch {
-        speakWithSpeechSynthesis(trimmed);
-      }
-    },
-    [getCartesiaAccessToken, humanizeCartesiaTranscript, speakWithSpeechSynthesis, unlockAudio]
-  );
 
   const handleChatSubmit = async (value: string, meta?: AIInputSubmitMeta) => {
     const trimmed = (value || "").trim();
@@ -792,6 +1236,59 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
 
     const source: AIInputSubmitMeta["source"] = meta?.source ?? "text";
     const isVoice = source === "voice";
+
+    const baseId = Date.now();
+    const responseId = baseId + 1;
+
+    void unlockAudio();
+    setChatInputValue("");
+    setIsChatLoading(true);
+    setChatLoadingQuery(trimmed);
+    setActiveInputSource(source);
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: baseId,
+        role: "user",
+        content: trimmed,
+        isVoice,
+        askCloudy: askCtx ?? null,
+      },
+      {
+        id: responseId,
+        role: "assistant",
+        content: "Thinking!!",
+        type: "text",
+      },
+    ]);
+
+    const promptCreatedAt = Date.now();
+    let promptId: Id<"user_prompts"> | null = null;
+    if (userId && activeSessionId) {
+      const args = {
+        userId,
+        sessionId: activeSessionId,
+        promptText: trimmed,
+        source,
+        is_SST: isVoice,
+        createdAt: promptCreatedAt,
+        searchQuery: searchQuery || undefined,
+      };
+      try {
+        const res = await writePrompt(args);
+        promptId = (res as { promptId?: Id<"user_prompts"> }).promptId ?? null;
+      } catch {
+        try {
+          const res = await writePrompt(args);
+          promptId = (res as { promptId?: Id<"user_prompts"> }).promptId ?? null;
+        } catch (err) {
+          console.error("Failed to save prompt", err);
+          setStorageError("Some messages could not be saved. Check your connection.");
+          promptId = null;
+        }
+      }
+    }
 
     const messagesForContext: ChatMessage[] = (() => {
       const hasSearchMessage = messages.some((m) => m.type === "search" && m.data);
@@ -846,6 +1343,60 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
       const summary = (p.summary || "").trim().slice(0, 200);
       return `Pinned ${kindLabel}: ${p.title}${summary ? ` - ${summary}` : ""}`;
     });
+
+  const convexHistoryContext = (() => {
+    const prompts = Array.isArray(chatHistory?.prompts) ? chatHistory?.prompts : [];
+    const responses = Array.isArray(chatHistory?.responses) ? chatHistory?.responses : [];
+      if (!prompts.length && !responses.length) return [];
+      const merged = [
+        ...prompts.map((p) => ({
+          role: "user" as const,
+          type: "text" as const,
+          content: (p.content || "").toString(),
+          data: null as null,
+          createdAt: Number(p.createdAt ?? 0),
+        })),
+        ...responses.map((r) => {
+          const hasSearchData =
+            r.responseType === "search" && r.data && typeof r.data === "object";
+          return {
+            role: "assistant" as const,
+            type: hasSearchData ? ("search" as const) : ("text" as const),
+            content: hasSearchData ? "" : (r.content || "").toString(),
+            data: hasSearchData ? (r.data as DynamicSearchResult["data"]) : null,
+            createdAt: Number(r.createdAt ?? 0),
+          };
+        }),
+      ].sort((a, b) => a.createdAt - b.createdAt);
+
+      return merged
+        .filter((m) => {
+          const hasContent = typeof m.content === "string" && m.content.trim().length > 0;
+          const isSearch = m.type === "search" && m.data;
+          return hasContent || isSearch;
+        })
+        .slice(-50)
+        .map((m) => {
+          const prefix = m.role === "user" ? "User" : "Assistant";
+          if (m.type === "search" && m.data) {
+            const summary =
+              m.data.overallSummaryLines?.filter(Boolean).join(" ") || "Search results";
+            const searchQuery = m.data.searchQuery || "";
+            return `${prefix}: (Search for "${searchQuery}") ${summary.slice(0, 500)}`;
+          }
+          const body = (m.content || "").trim().slice(0, 500);
+          return `${prefix}: ${body}`;
+        });
+    })();
+
+    const shouldAttachConvexHistory = chatHistory?.chat?.count === 1;
+    const historySet = new Set(historyContext);
+    const mergedHistoryContext = shouldAttachConvexHistory
+      ? [
+          ...historyContext,
+          ...convexHistoryContext.filter((line) => !historySet.has(line)),
+        ]
+      : historyContext;
 
     const maxWindowMessages = 6;
     const recentMessages = [...messagesForContext]
@@ -912,6 +1463,17 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
                   title: yt.title,
                   channelTitle: yt.channelTitle,
                   url: `https://www.youtube.com/watch?v=${yt.id}`,
+                })),
+              shoppingItems: (lastSearchData.shoppingItems ?? [])
+                .slice(0, 4)
+                .map((p, idx) => ({
+                  index: idx + 1,
+                  id: p.id ?? null,
+                  title: p.title,
+                  priceText: p.priceText ?? null,
+                  rating: p.rating ?? null,
+                  reviewCount: p.reviewCount ?? null,
+                  source: p.source ?? null,
                 })),
             }
           : null,
@@ -992,27 +1554,14 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
       }
     }
 
-    void unlockAudio();
-    const baseId = Date.now();
-    setChatInputValue("");
-    setIsChatLoading(true);
-    setChatLoadingQuery(trimmed);
-    setActiveInputSource(source);
-
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: baseId,
-        role: "user",
-        content: trimmed,
-        isVoice,
-        askCloudy: askCtx ?? null,
-      },
-    ]);
-
     try {
-      if (userId && activeSessionId && recentMessages.length === maxWindowMessages) {
-        const memoryTurns: MemoryWindowTurn[] = recentMessages.map((m) => {
+      const shouldBuildMemoryWindow = userId && activeSessionId && recentMessages.length > 0;
+
+      let memoryTurns: MemoryWindowTurn[] = [];
+      let nextWindowKey: string | null = null;
+
+      if (shouldBuildMemoryWindow) {
+        memoryTurns = recentMessages.map((m) => {
           const base = {
             role: m.role,
             type: (m.type ?? "text") as "text" | "search",
@@ -1029,7 +1578,7 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
           }
           return base;
         });
-        const nextWindowKey = JSON.stringify(
+        nextWindowKey = JSON.stringify(
           memoryTurns.map((t) => ({
             role: t.role,
             type: t.type,
@@ -1037,26 +1586,54 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
             searchQuery: t.search?.searchQuery ?? "",
           }))
         );
-        if (nextWindowKey && nextWindowKey !== memoryWindowKey) {
-          void (async () => {
-            const result = await extractMemoryFromWindow({
-              windowKey: nextWindowKey,
-              turns: memoryTurns,
-              userId,
-              sessionId: activeSessionId,
+      }
+
+      if (
+        shouldBuildMemoryWindow &&
+        recentMessages.length === maxWindowMessages &&
+        nextWindowKey &&
+        nextWindowKey !== memoryWindowKey
+      ) {
+        void (async () => {
+          const result = await extractMemoryFromWindow({
+            windowKey: nextWindowKey as string,
+            turns: memoryTurns,
+            userId,
+            sessionId: activeSessionId as string,
+          });
+          if (result.windowKey) {
+            setMemoryWindowKey(result.windowKey);
+          }
+          const summary = result.conversationSummary ?? "";
+          if (summary) {
+            setConversationMemory((prev) => {
+              const next = [...prev, summary];
+              return Array.from(new Set(next)).slice(-20);
             });
-            if (result.windowKey) {
-              setMemoryWindowKey(result.windowKey);
-            }
-            const summary = result.conversationSummary ?? "";
-            if (summary) {
-              setConversationMemory((prev) => {
-                const next = [...prev, summary];
-                return Array.from(new Set(next)).slice(-20);
-              });
-            }
-          })();
-        }
+          }
+        })();
+      }
+
+      if (shouldBuildMemoryWindow && memoryTurns.length > 0 && chatId) {
+        void (async () => {
+          try {
+            await fetch("/api/memory/update", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                chatId,
+                userId,
+                sessionId: activeSessionId,
+                turns: memoryTurns.map((t) => ({
+                  role: t.role,
+                  text: t.text,
+                })),
+              }),
+            });
+          } catch (err) {
+            console.error("Failed to update visual memory", err);
+          }
+        })();
       }
       let baseContext: string[] = [];
       if (structuredContext) {
@@ -1065,91 +1642,192 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
           baseContext.push(`ConversationContext: ${structuredConversationContext}`);
         }
       } else {
-        baseContext = [...historyContext, ...pinnedContext];
+        baseContext = [...mergedHistoryContext, ...pinnedContext];
         if (structuredConversationContext) {
           baseContext.push(`ConversationContext: ${structuredConversationContext}`);
         }
       }
+      const contextInputs = [...baseContext, `User: ${trimmed.slice(0, 500)}`];
+
       const result = await performDynamicSearch(trimmed, {
-        context: [...baseContext, `User: ${trimmed.slice(0, 500)}`],
+        context: contextInputs,
         userId: userId ?? undefined,
         sessionId: activeSessionId ?? undefined,
+        shoppingLocation: shoppingLocation || undefined,
       });
       
-      if (result.type === "search" && result.data) {
+        if (result.type === "search" && result.data) {
+        let assistantText = "";
         if (result.data.youtubeItems && result.data.youtubeItems.length > 0) {
-          pendingSpeakShouldSpeakRef.current = isVoice;
-          pendingSpeakTextRef.current = `Here are your vids on ${result.data.searchQuery || trimmed}`;
+          pendingSpeakShouldSpeakRef.current = false;
+          assistantText = `Here are your vids on ${result.data.searchQuery || trimmed}`;
         } else {
           pendingSpeakShouldSpeakRef.current = isVoice;
-          pendingSpeakTextRef.current = result.data.overallSummaryLines.filter(Boolean).join(" ");
+          assistantText = result.data.overallSummaryLines.filter(Boolean).join(" ");
+        }
+        pendingSpeakTextRef.current = assistantText;
+
+        if (userId && activeSessionId) {
+          const responseCreatedAt = Date.now();
+          const args: {
+            userId: string;
+            sessionId: string;
+            promptId?: Id<"user_prompts">;
+            responseType: "search";
+            content: string;
+            data: DynamicSearchResult["data"];
+            createdAt: number;
+          } = {
+            userId,
+            sessionId: activeSessionId,
+            promptId: promptId ?? undefined,
+            responseType: "search" as const,
+            content: assistantText,
+            data: result.data,
+            createdAt: responseCreatedAt,
+          };
+          void (async () => {
+            try {
+              await writeResponse(args);
+            } catch {
+              try {
+                await writeResponse(args);
+              } catch (err) {
+                console.error("Failed to save response", err);
+                setStorageError("Some messages could not be saved. Check your connection.");
+              }
+            }
+          })();
         }
 
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: baseId + 1,
-            role: "assistant",
-            content: "", // Content is empty for search blocks
+        const nextData = { ...result.data, summary: "" };
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === responseId
+              ? {
+                  id: responseId,
+                  role: "assistant",
+                  content: assistantText,
+                  type: "search",
+                  data: nextData,
+                  mem0Ops: result.mem0Ops,
+                  inputsUsed: contextInputs,
+                }
+              : m
+          )
+        );
+        if (
+          !(result.data.youtubeItems && result.data.youtubeItems.length > 0) &&
+          Array.isArray(result.data.webItems) &&
+          result.data.webItems.length > 0
+        ) {
+          const total = Math.min(
+            3,
+            (result.data.mediaItems ?? [])
+              .map((item) => normalizeExternalUrl(item.src))
+              .filter((src) => Boolean(src)).length
+          );
+          setPendingMediaLoad({ messageId: responseId, total, loaded: 0 });
+          setPendingStream({
+            messageId: responseId,
             type: "search",
-            data: result.data,
-            mem0Ops: result.mem0Ops,
-          },
-        ]);
+            searchQuery: result.data.searchQuery,
+            webItems: result.data.webItems.map((it) => ({
+              link: it.link,
+              title: it.title,
+              summaryLines: it.summaryLines,
+            })),
+          });
+          deferChatLoadingRef.current = true;
+        }
       } else {
         // Handle text response
         const text = result.content || "I'm not sure how to respond to that.";
         pendingSpeakShouldSpeakRef.current = isVoice;
         pendingSpeakTextRef.current = text;
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: baseId + 1,
-            role: "assistant",
+
+        if (userId && activeSessionId) {
+          const responseCreatedAt = Date.now();
+          const args: {
+            userId: string;
+            sessionId: string;
+            promptId?: Id<"user_prompts">;
+            responseType: "text";
+            content: string;
+            data: null;
+            createdAt: number;
+          } = {
+            userId,
+            sessionId: activeSessionId,
+            promptId: promptId ?? undefined,
+            responseType: "text" as const,
             content: text,
-            type: "text",
-            mem0Ops: result.mem0Ops,
-          },
-        ]);
+            data: null,
+            createdAt: responseCreatedAt,
+          };
+          void (async () => {
+            try {
+              await writeResponse(args);
+            } catch {
+              try {
+                await writeResponse(args);
+              } catch (err) {
+                console.error("Failed to save response", err);
+                setStorageError("Some messages could not be saved. Check your connection.");
+              }
+            }
+          })();
+        }
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === responseId
+              ? {
+                  id: responseId,
+                  role: "assistant",
+                  content: "",
+                  type: "text",
+                  mem0Ops: result.mem0Ops,
+                  inputsUsed: contextInputs,
+                }
+              : m
+          )
+        );
+        setPendingMediaLoad({ messageId: responseId, total: 0, loaded: 0 });
+        setPendingStream({ messageId: responseId, type: "text", text });
+        deferChatLoadingRef.current = true;
       }
     } catch (err) {
-      pendingSpeakShouldSpeakRef.current = isVoice;
+      deferChatLoadingRef.current = false;
+      pendingSpeakShouldSpeakRef.current = false;
       pendingSpeakTextRef.current = "There was an error processing your request. Please try again.";
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: baseId + 1,
-          role: "assistant",
-          content: "There was an error processing your request. Please try again.",
-        },
-      ]);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === responseId
+            ? {
+                ...m,
+                role: "assistant",
+                content: "There was an error processing your request. Please try again.",
+              }
+            : m
+        )
+      );
     } finally {
-      setIsChatLoading(false);
-      setActiveInputSource(null);
+      if (!deferChatLoadingRef.current) {
+        setIsChatLoading(false);
+        setActiveInputSource(null);
+      }
     }
   };
 
   useEffect(() => {
+    if (!pendingSpeakShouldSpeakRef.current) return;
     const text = (pendingSpeakTextRef.current || "").trim();
     if (!text) return;
-    const shouldSpeak = pendingSpeakShouldSpeakRef.current;
-    pendingSpeakTextRef.current = null;
     pendingSpeakShouldSpeakRef.current = false;
-    if (!shouldSpeak) return;
-    let raf1 = 0;
-    let raf2 = 0;
-    raf1 = window.requestAnimationFrame(() => {
-      raf2 = window.requestAnimationFrame(() => {
-        void speakWithCartesia(text);
-      });
-    });
-    return () => {
-      if (raf1) window.cancelAnimationFrame(raf1);
-      if (raf2) window.cancelAnimationFrame(raf2);
-    };
-  }, [messages, searchQuery, speakWithCartesia]);
+    pendingSpeakTextRef.current = null;
+    void speakWithSpeechSynthesis(text);
+  }, [messages, searchQuery, speakWithSpeechSynthesis]);
 
-  const showVoiceOverlay = isSpeechProcessing || activeInputSource === "voice";
   const pinnedIds = pinnedItems.map((p) => p.id);
 
   const handleAskCloudyClick = () => {
@@ -1163,6 +1841,84 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
       const sel = window.getSelection();
       sel?.removeAllRanges();
     }
+  };
+
+  const rawSummaryText = (summary || "").trim() || overallSummaryLines.filter(Boolean).join(" ");
+  const firstParagraph = rawSummaryText.split(/\n\s*\n/)[0] || rawSummaryText;
+  const trimmedWords = firstParagraph.split(/\s+/).slice(0, 70).join(" ");
+  const summaryText = trimmedWords.trim();
+  const summaryParagraphs = summaryText ? summaryText.split(/\n\s*\n/).filter(Boolean) : [];
+  const summaryWordSplit = summaryText ? summaryText.split(/\s+/) : [];
+  const summarySplitIndex = Math.max(1, Math.floor(summaryWordSplit.length / 2));
+  const summaryFirst =
+    summaryParagraphs.length >= 2 ? summaryParagraphs[0] : summaryWordSplit.slice(0, summarySplitIndex).join(" ");
+  const summarySecond =
+    summaryParagraphs.length >= 2
+      ? summaryParagraphs.slice(1).join("\n\n")
+      : summaryWordSplit.slice(summarySplitIndex).join(" ");
+
+  const chatMediaItems = mediaItems
+    .map((item) => ({ ...item, src: normalizeExternalUrl(item.src) }))
+    .filter((item) => Boolean(item.src)) as Array<{ src: string; alt?: string }>;
+  const chatMediaItemsLimited = chatMediaItems.slice(0, 3);
+
+  useEffect(() => {
+    setChatMediaTotal(chatMediaItemsLimited.length);
+    setChatMediaLoaded(0);
+  }, [chatMediaItemsLimited.length, searchQuery]);
+
+  const handleChatMediaLoaded = useCallback(() => {
+    setChatMediaLoaded((prev) => (prev < chatMediaTotal ? prev + 1 : prev));
+  }, [chatMediaTotal]);
+
+  const handlePendingMediaLoaded = useCallback(() => {
+    setPendingMediaLoad((prev) => ({
+      ...prev,
+      loaded: prev.loaded < prev.total ? prev.loaded + 1 : prev.loaded,
+    }));
+  }, []);
+
+  const handleLightboxClose = useCallback(() => {
+    setLightboxIndex(null);
+  }, []);
+
+  const handleLightboxPrev = useCallback(() => {
+    setLightboxIndex((prev) => {
+      if (prev === null || chatMediaItemsLimited.length === 0) return prev;
+      return (prev - 1 + chatMediaItemsLimited.length) % chatMediaItemsLimited.length;
+    });
+  }, [chatMediaItemsLimited.length]);
+
+  const handleLightboxNext = useCallback(() => {
+    setLightboxIndex((prev) => {
+      if (prev === null || chatMediaItemsLimited.length === 0) return prev;
+      return (prev + 1) % chatMediaItemsLimited.length;
+    });
+  }, [chatMediaItemsLimited.length]);
+
+  const renderSummaryWithCitations = (text: string) => {
+    const normalized = normalizeSummaryText(text || "");
+    if (!normalized) return null;
+    const parts = normalized.split(/\[(\d+)\]/g);
+    return parts.map((part, idx) => {
+      const isIndex = idx % 2 === 1;
+      if (!isIndex) return <span key={`t-${idx}`}>{part}</span>;
+      const sourceIndex = Number(part);
+      const item = Number.isFinite(sourceIndex) ? webItems[sourceIndex - 1] : undefined;
+      const label = item?.link ? formatDisplayUrl(item.link) : `[${part}]`;
+      if (!item?.link) return <span key={`t-${idx}`}>{label}</span>;
+      return (
+        <a
+          key={`t-${idx}`}
+          href={item.link}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-blue-600 underline underline-offset-2"
+        >
+          {label}
+        </a>
+      );
+    });
   };
 
   return (
@@ -1181,334 +1937,187 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
           <span>Ask Cloudy</span>
         </button>
       )}
-      {(isChatLoading || isSpeechProcessing) && (
-        <div className="absolute inset-0 z-[70] bg-white/90 dark:bg-black/80 backdrop-blur-sm">
-          {showVoiceOverlay ? (
-            <div className="h-full w-full flex flex-col">
-              <div className="px-6 pt-10">
-                <div className="flex items-center gap-3 text-blue-600 dark:text-blue-400">
-                  <Mic className="w-5 h-5" />
-                  <div className="text-lg font-semibold truncate">{isSpeechProcessing ? "Transcribing…" : "Thinking…"}</div>
-                </div>
-              </div>
-              <div className="px-6 pt-10 space-y-6 flex-1">
-                <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <div>{isSpeechProcessing ? "Transcribing…" : "Thinking…"}</div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="h-full w-full flex flex-col">
-              <div className="px-6 pt-10">
-                <div className="flex items-center gap-3 text-blue-600 dark:text-blue-400">
-                  <Search className="w-5 h-5" />
-                  <div className="text-lg font-semibold truncate">{isChatLoading ? chatLoadingQuery : "Transcribing…"}</div>
-                </div>
-              </div>
-              <div className="px-6 pt-10 space-y-6 flex-1">
-                <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <div>{isChatLoading ? "Thinking…" : "Transcribing…"}</div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-      {showBootOverlay && (
-        <div className="absolute inset-0 z-[60] bg-white/90 dark:bg-black/80 backdrop-blur-sm">
-          <div className="h-full w-full flex flex-col">
-            <div className="px-6 pt-10">
-              <div className="flex items-center gap-3 text-blue-600 dark:text-blue-400">
-                {voiceParam ? <Mic className="w-5 h-5" /> : <Search className="w-5 h-5" />}
-                <div className="text-lg font-semibold truncate">{searchQuery}</div>
-              </div>
-            </div>
-
-            <div className="px-6 pt-10 space-y-6 flex-1">
-              <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <div>
-                  Reading {sources.length || 6} web pages
-                </div>
-              </div>
-              <div className="space-y-1 text-blue-600/90 dark:text-blue-300/90">
-                {(sources.length ? sources : Array.from({ length: 6 }).map((_, i) => `source-${i + 1}.com`)).map((s) => (
-                  <div key={s} className="text-sm truncate">{s}</div>
-                ))}
-              </div>
-
-              <div className="pt-6 space-y-2 text-neutral-800 dark:text-neutral-100">
-                <div className="flex items-center gap-2 text-sm">
-                  <CheckCircle2 className={cn("w-4 h-4", bootStatus.webDone ? "text-emerald-500" : "text-neutral-400")} />
-                  <div className={cn(bootStatus.webDone ? "opacity-100" : "opacity-70")}>Step 1: Fetching results</div>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <CheckCircle2 className={cn("w-4 h-4", bootStatus.mediaDone ? "text-emerald-500" : "text-neutral-400")} />
-                  <div className={cn(bootStatus.mediaDone ? "opacity-100" : "opacity-70")}>Step 2: Fetching media</div>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <CheckCircle2 className={cn("w-4 h-4", bootStatus.webDone && bootStatus.mediaDone ? "text-emerald-500" : "text-neutral-400")} />
-                  <div className={cn(bootStatus.webDone && bootStatus.mediaDone ? "opacity-100" : "opacity-70")}>Step 3: Finalizing</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="px-6 pb-10">
-              <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold">
-                <Globe className="w-5 h-5" />
-                <div>Making a website for you!</div>
-              </div>
-            </div>
+      {lightboxIndex !== null && chatMediaItemsLimited[lightboxIndex] && (
+        <div
+          className="fixed inset-0 z-[70] bg-black/90 flex items-center justify-center"
+          onClick={handleLightboxClose}
+        >
+          <button
+            type="button"
+            onClick={handleLightboxClose}
+            className="absolute top-6 right-6 text-white/80 hover:text-white"
+          >
+            <X className="w-6 h-6" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleLightboxPrev();
+            }}
+            className="absolute left-6 text-white/80 hover:text-white"
+          >
+            <ChevronLeft className="w-8 h-8" />
+          </button>
+          <div
+            className="max-w-5xl w-full px-10"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={chatMediaItemsLimited[lightboxIndex].src}
+              alt={chatMediaItemsLimited[lightboxIndex].alt ?? ""}
+              referrerPolicy="no-referrer"
+              className="w-full max-h-[80vh] object-contain rounded-lg"
+            />
           </div>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleLightboxNext();
+            }}
+            className="absolute right-6 text-white/80 hover:text-white"
+          >
+            <ChevronRight className="w-8 h-8" />
+          </button>
         </div>
       )}
-      <div className={cn(
-        "flex flex-col h-full transition-all duration-300 ease-in-out relative",
-        browserTabs.length > 0 ? "w-1/3 min-w-[350px] border-r" : "w-full"
-      )}>
+      <div
+        className={cn(
+          "flex flex-col h-full transition-all duration-300 ease-in-out relative",
+          browserTabs.length > 0 ? "w-1/3 min-w-[350px] border-r" : "w-full"
+        )}
+      >
         <div className="flex-1 w-full min-h-0 relative">
-          <Conversation className="w-full h-full overflow-y-auto">
-            <ConversationContent className="max-w-5xl mx-auto px-4 pt-6 pb-32">
-              <Message from="user" className="ml-auto">
-                <div className="flex items-start gap-3 w-full flex-row-reverse">
-                  {user?.imageUrl ? (
-                    <Image
-                      src={user.imageUrl}
-                      alt={user.fullName || "User"}
-                      width={32}
-                      height={32}
-                      className="h-8 w-8 rounded-full mt-1 shrink-0"
-                    />
-                  ) : (
-                    <div className="h-8 w-8 rounded-full bg-secondary mt-1 shrink-0" />
-                  )}
-                  <MessageContent
-                    data-cloudy-kind="conversation"
-                    data-cloudy-role="user"
-                    data-cloudy-message-id="initial-search"
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      {voiceParam && <Mic className="w-4 h-4" />}
-                      <span>{searchQuery}</span>
-                    </span>
-                  </MessageContent>
-                </div>
-              </Message>
-
-              <Message from="assistant" className="mr-auto">
-                <div className="flex items-start gap-3 w-full flex-row">
-                  <div className="shrink-0">
-                    <AtomLogo size={28} className="text-foreground" />
-                  </div>
-                  <div className="w-full pt-1">
-                  {overallSummaryLines.length > 0 && !shouldShowTabs && (
-                    <div className="mb-4">
-                      <MessageContent className="mt-1">
-                        {overallSummaryLines.filter(Boolean).join(" ")}
-                      </MessageContent>
-                    </div>
-                  )}
-
-                  {mapLocation && (
-                     <div className="mb-6">
-                        <MessageContent className="mb-2">
-                           I found {mapLocation} on the map. You can view it in the side panel.
+          <Conversation className="w-full h-full">
+            <ConversationContent className="max-w-5xl mx-auto px-4 pt-4 pb-24">
+              {messages.length === 0 &&
+                (!chatHistory?.chat || (chatHistory.chat.count ?? 0) === 0) && (
+                  <>
+                    <Message from="user" className="ml-auto">
+                      <div className="flex items-start gap-3 w-full flex-row-reverse">
+                        {user?.imageUrl ? (
+                          <Image
+                            src={user.imageUrl}
+                            alt={user.fullName || "User"}
+                            width={32}
+                            height={32}
+                            className="h-8 w-8 rounded-full mt-1 shrink-0"
+                          />
+                        ) : (
+                          <div className="h-8 w-8 rounded-full bg-secondary mt-1 shrink-0" />
+                        )}
+                        <MessageContent
+                          data-cloudy-kind="conversation"
+                          data-cloudy-role="user"
+                          data-cloudy-message-id="initial-search"
+                        >
+                          <span className="inline-flex items-center gap-2">
+                            {voiceParam && <Mic className="w-4 h-4" />}
+                            <span>{searchQuery}</span>
+                          </span>
                         </MessageContent>
-                        <MapBlock 
-                           location={mapLocation} 
-                           onOpenSideMap={() => handleLinkClick(`/home/map-view?location=${encodeURIComponent(mapLocation)}`, `Map: ${mapLocation}`)} 
-                        />
-                     </div>
-                  )}
+                      </div>
+                    </Message>
 
-                  {shouldShowTabs && !youtubeItems?.length && (
-                    <div className="flex gap-2 mb-8">
-                      <button
-                        type="button"
-                        onClick={() => handlePrimaryTabChange("results")}
-                        className={cn(
-                          "px-3 py-1 text-sm font-medium rounded-md transition-colors",
-                          primaryTab === "results"
-                            ? "bg-black text-white dark:bg-white dark:text-black"
-                            : "bg-accent text-muted-foreground hover:bg-accent/80"
-                        )}
-                      >
-                        Results
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handlePrimaryTabChange("media")}
-                        className={cn(
-                          "px-3 py-1 text-sm font-medium rounded-md transition-colors",
-                          primaryTab === "media"
-                            ? "bg-black text-white dark:bg-white dark:text-black"
-                            : "bg-accent text-muted-foreground hover:bg-accent/80"
-                        )}
-                      >
-                        Media
-                      </button>
-                    </div>
-                  )}
-
-                  {youtubeItems && youtubeItems.length > 0 ? (
-                    <div className="mb-8">
-                      <VideoList
-                        videos={youtubeItems}
-                        onLinkClick={handleLinkClick}
-                        onPinItem={handleTogglePinItem}
-                        pinnedIds={pinnedIds}
-                      />
-                    </div>
-                  ) : shouldShowTabs && (
-                    isWeatherQuery ? (
-                      <>
-                        <div className="text-sm font-medium mb-2">Weather</div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-                          {(weatherItems || []).map((w, i) => (
-                            <div key={i} className="flex justify-center">
-                              <WeatherWidget
-                                width="18rem"
-                                className="w-[18rem]"
-                                location={
-                                  w.latitude && w.longitude
-                                    ? { latitude: w.latitude, longitude: w.longitude }
-                                    : undefined
-                                }
-                                onFetchWeather={async () => {
-                                  if (w.data) return w.data;
-                                  throw new Error(w.error || "Weather unavailable");
-                                }}
-                                onError={() => {}}
-                                onWeatherLoaded={() => {}}
-                              />
-                            </div>
-                          ))}
+                    <Message from="assistant" className="mr-auto">
+                      <div className="flex items-start gap-3 w-full flex-row">
+                        <div className="shrink-0">
+                          <AtomLogo size={28} className="text-foreground" />
                         </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className={cn(primaryTab === "results" ? "block" : "hidden")}>
-                          {overallSummaryLines.length > 0 && (
-                            <div className="mb-6">
+                        <div className="w-full pt-1">
+                          {overallSummaryLines.length > 0 && !shouldShowTabs && (
+                            <div className="mb-4">
                               <MessageContent className="mt-1">
                                 {overallSummaryLines.filter(Boolean).join(" ")}
                               </MessageContent>
                             </div>
                           )}
-                          <div className="text-sm font-medium mb-3">Search results</div>
-                          {webItems.length ? (
-                            <div className="grid grid-cols-1 gap-3 mb-8">
-                              {webItems.map((item, i) => (
-                                <SearchResultItem
-                                  key={i}
-                                  link={item.link}
-                                  title={item.title}
-                                  description={item.summaryLines[0]}
-                                  imageUrl={item.imageUrl}
-                                  onClick={() => handleLinkClick(item.link, item.title)}
-                                />
-                              ))}
+
+                          {mapLocation && (
+                            <div className="mb-6">
+                              <MessageContent className="mb-2">
+                                I found {mapLocation} on the map. You can view it
+                                in the side panel.
+                              </MessageContent>
+                              <MapBlock
+                                location={mapLocation}
+                                onOpenSideMap={() =>
+                                  handleLinkClick(
+                                    `/home/map-view?location=${encodeURIComponent(
+                                      mapLocation
+                                    )}`,
+                                    `Map: ${mapLocation}`
+                                  )
+                                }
+                              />
                             </div>
-                          ) : (
+                          )}
+
+                          {shouldShowTabs && (
+                            <SearchResultsBlock
+                              searchQuery={searchQuery}
+                              overallSummaryLines={overallSummaryLines}
+                              summary={summary}
+                              summaryIsStreaming={chatSummaryStatus === "loading"}
+                              webItems={webItems}
+                              mediaItems={mediaItems}
+                              weatherItems={weatherItems}
+                              youtubeItems={youtubeItems}
+                              shoppingItems={shoppingItems}
+                              shouldShowTabs={shouldShowTabs}
+                              onLinkClick={handleLinkClick}
+                              onPinItem={handleTogglePinItem}
+                              pinnedIds={pinnedIds}
+                              onMediaLoad={handleChatMediaLoaded}
+                            />
+                          )}
+
+                          {!shouldShowTabs && (
                             <>
-                              {Array.from({ length: 10 }).map((_, i) => (
-                                <div key={i} className="space-y-2 mb-8">
-                                  <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm">
-                                    <div className="h-4 w-full" />
+                              {webItems.length ? (
+                                <>
+                                  <div className="text-sm font-medium mb-2">
+                                    Search results
                                   </div>
-                                  <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm text-muted-foreground" />
-                                  <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm text-muted-foreground" />
-                                </div>
-                              ))}
+                                  {webItems.map((item, i) => (
+                                    <div key={i} className="space-y-2 mb-8">
+                                      <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm">
+                                        <a
+                                          href={item.link}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-blue-600 underline underline-offset-2 truncate block"
+                                          title={item.title}
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            handleLinkClick(item.link, item.title);
+                                          }}
+                                        >
+                                          {formatDisplayUrl(item.link)}
+                                        </a>
+                                      </div>
+                                      <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                                        {item.summaryLines[0]}
+                                      </div>
+                                      <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                                        {item.summaryLines[1]}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </>
+                              ) : null}
                             </>
                           )}
                         </div>
-
-                        <div className={cn(primaryTab === "media" ? "block" : "hidden")}>
-                          {mediaItems.length ? (
-                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-8">
-                              {mediaItems.map((item, i) => {
-                                const src = normalizeExternalUrl(item.src);
-                                if (!src) return null;
-                                return (
-                                  <div
-                                    key={i}
-                                    className="aspect-square bg-accent rounded-md border overflow-hidden flex items-center justify-center"
-                                  >
-                                    <Image
-                                      src={src}
-                                      alt={item.alt ?? ""}
-                                      width={600}
-                                      height={600}
-                                      unoptimized
-                                      loading={i < 6 ? "eager" : "lazy"}
-                                      referrerPolicy="no-referrer"
-                                      className="w-full h-full object-cover"
-                                    />
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-8">
-                              {Array.from({ length: 12 }).map((_, i) => (
-                                <div
-                                  key={i}
-                                  className="aspect-square bg-accent rounded-md border overflow-hidden flex items-center justify-center"
-                                >
-                                  <div className="w-3/4 h-3/4 bg-muted rounded-md" />
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </>
-                    )
-                  )}
-
-                  {!shouldShowTabs && (
-                    <>
-                      {webItems.length ? (
-                        <>
-                          <div className="text-sm font-medium mb-2">Search results</div>
-                          {webItems.map((item, i) => (
-                            <div key={i} className="space-y-2 mb-8">
-                              <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm">
-                                <a
-                                  href={item.link}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-blue-600 hover:underline truncate block"
-                                  title={item.title}
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    handleLinkClick(item.link, item.title);
-                                  }}
-                                >
-                                  {item.title}
-                                </a>
-                              </div>
-                              <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm text-muted-foreground">
-                                {item.summaryLines[0]}
-                              </div>
-                              <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm text-muted-foreground">
-                                {item.summaryLines[1]}
-                              </div>
-                            </div>
-                          ))}
-                        </>
-                      ) : null}
-                    </>
-                  )}
-                </div>
-                </div>
-              </Message>
+                      </div>
+                    </Message>
+                  </>
+                )}
 
               {messages.length > 0 && (
                 <div className="mt-6 space-y-4">
-                  {messages.map((msg) => (
+                  {messages.map((msg, index) => (
                     <Message
                       key={msg.id}
                       from={msg.role}
@@ -1538,18 +2147,30 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
                                     />
                                 </div>
                             )}
-                          <SearchResultsBlock
-                            searchQuery={msg.data.searchQuery}
-                            overallSummaryLines={msg.data.overallSummaryLines}
-                            webItems={msg.data.webItems}
-                            mediaItems={msg.data.mediaItems}
+                            <SearchResultsBlock
+                              searchQuery={msg.data.searchQuery}
+                              overallSummaryLines={msg.data.overallSummaryLines}
+                              summary={msg.data.summary}
+                              summaryIsStreaming={
+                                pendingStream?.type === "search" &&
+                                pendingStream?.messageId === msg.id
+                              }
+                              webItems={msg.data.webItems}
+                              mediaItems={msg.data.mediaItems}
                               weatherItems={msg.data.weatherItems}
                               youtubeItems={msg.data.youtubeItems}
+                              shoppingItems={msg.data.shoppingItems}
                               shouldShowTabs={msg.data.shouldShowTabs}
                               onLinkClick={handleLinkClick}
                               onPinItem={handleTogglePinItem}
-                            pinnedIds={pinnedIds}
-                          />
+                              pinnedIds={pinnedIds}
+                              onMediaLoad={
+                                msg.id === pendingMediaLoad.messageId
+                                  ? handlePendingMediaLoaded
+                                  : undefined
+                              }
+                            />
+                          {renderCitation(msg, index)}
                         </div>
                       </div>
                     ) : (
@@ -1560,14 +2181,15 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
                               <AtomLogo size={28} className="text-foreground" />
                             </div>
                             <div className="w-full pt-1">
-                              <MessageContent
-                                className="mt-1"
-                                data-cloudy-kind="conversation"
-                                data-cloudy-role={msg.role}
-                                data-cloudy-message-id={String(msg.id)}
-                              >
-                                {msg.content}
-                              </MessageContent>
+                          <MessageContent
+                            className="mt-1"
+                            data-cloudy-kind="conversation"
+                            data-cloudy-role={msg.role}
+                            data-cloudy-message-id={String(msg.id)}
+                          >
+                            {msg.content}
+                          </MessageContent>
+                          {renderCitation(msg, index, "inline")}
                             </div>
                           </div>
                         ) : (
@@ -1608,20 +2230,62 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
                     )}
                   </Message>
                 ))}
+                {isChatLoading && shouldShowTabs && (
+                  <Message from="assistant" className="mr-auto">
+                    <div className="flex items-start gap-3 w-full flex-row">
+                      <div className="shrink-0">
+                        <AtomLogo size={28} className="text-foreground" />
+                      </div>
+                      <div className="w-full pt-1">
+                        <MessageContent className="mt-1 text-blue-600 dark:text-blue-400">
+                          Searching up…
+                        </MessageContent>
+                      </div>
+                    </div>
+                  </Message>
+                )}
               </div>
               )}
             </ConversationContent>
-            <ConversationScrollButton />
+          <ConversationScrollButton />
           </Conversation>
         </div>
-        <AIInputFooter
-          onSubmit={handleChatSubmit}
-          inputValue={chatInputValue}
-          onInputChange={setChatInputValue}
-          onSpeechProcessingChange={setIsSpeechProcessing}
-          askCloudyOverlayText={askCloudyContext?.selectedText ?? null}
-          onClearAskCloudyOverlay={() => setAskCloudyContext(null)}
-        />
+        {primaryTab === "chat" && (
+          <div className="w-full px-4 pb-4">
+            {(searchQuery || "").toLowerCase().startsWith("shopping ") &&
+              shoppingLocationLoaded &&
+              !shoppingLocation && (
+                <div className="mb-3 rounded-md border bg-accent px-3 py-2 text-xs flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <span className="font-medium">Set your shopping location</span>
+                  <div className="flex items-center gap-2 flex-1">
+                    <input
+                      type="text"
+                      value={shoppingLocation}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setShoppingLocation(val);
+                        if (typeof window !== "undefined") {
+                          try {
+                            window.localStorage.setItem("shopping_location", val);
+                          } catch {}
+                        }
+                      }}
+                      placeholder="City, region or country"
+                      className="flex-1 rounded-md border px-2 py-1 text-xs bg-background"
+                    />
+                  </div>
+                </div>
+              )}
+            <AIInputFooter
+              onSubmit={handleChatSubmit}
+              inputValue={chatInputValue}
+              onInputChange={setChatInputValue}
+              onSpeechProcessingChange={setIsSpeechProcessing}
+              askCloudyOverlayText={askCloudyContext?.selectedText ?? null}
+              onClearAskCloudyOverlay={() => setAskCloudyContext(null)}
+            />
+          </div>
+        )}
       </div>
 
       {/* Browser Panel */}
