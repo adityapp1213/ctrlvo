@@ -74,7 +74,7 @@ export async function deepgramSpeakText(text: string): Promise<void> {
       processing = true;
       const chunk = queue.shift() as Uint8Array;
       try {
-        sourceBuffer.appendBuffer(chunk);
+        sourceBuffer.appendBuffer(chunk as unknown as BufferSource);
       } catch {
       } finally {
         processing = false;

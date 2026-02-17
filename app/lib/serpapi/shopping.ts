@@ -137,7 +137,7 @@ export async function shoppingSearch(
           additionalImageUrls,
         } satisfies ShoppingProduct | null;
       })
-      .filter((p): p is ShoppingProduct => Boolean(p));
+      .filter(Boolean) as ShoppingProduct[];
   } catch (err) {
     console.warn("[shoppingSearch] Request failed", err);
     return [];
