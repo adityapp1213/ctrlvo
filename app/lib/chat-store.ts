@@ -46,7 +46,6 @@ export type ChatSession = {
   pinnedItems?: PinnedItem[];
   conversationMemory?: string[];
   memoryWindowKey?: string | null;
-  shoppingItems?: any[];
 };
 
 function storageKeyForUser(userId: string | null | undefined) {
