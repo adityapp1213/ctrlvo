@@ -51,7 +51,7 @@ export const MessageContent = ({
   return (
     <div
       className={cn(
-        "is-user:dark flex w-fit max-w-full min-w-0 flex-col gap-2 overflow-hidden text-sm",
+        "is-user:dark flex w-fit max-w-full min-w-0 flex-col gap-2 overflow-hidden text-sm break-words",
         "group-[.is-user]:text-foreground",
         "group-[.is-assistant]:text-foreground",
         className

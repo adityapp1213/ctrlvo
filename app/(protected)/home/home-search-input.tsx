@@ -18,6 +18,7 @@ import {
   Globe,
   Grid,
   Mic,
+  Pause,
   Plus,
   Search,
   ShoppingBag,
@@ -209,15 +210,18 @@ function HomeSearchInputContent({ variant, onSubmitOverride }: HomeSearchInputCo
         variant="outline"
         size="icon-lg"
         className={cn(
-          "rounded-full",
-          isListening &&
-            "animate-pulse bg-accent text-accent-foreground border-transparent"
+          "rounded-full transition-colors duration-200",
+          isListening && "bg-accent text-accent-foreground border-transparent"
         )}
         onClick={toggleListening}
         aria-label="Record"
         disabled={!hasRecognition}
       >
-        <Mic className="h-4 w-4" />
+        {isListening ? (
+          <Pause className="h-4 w-4" />
+        ) : (
+          <Mic className="h-4 w-4" />
+        )}
       </Button>
     ) : (
       <Button

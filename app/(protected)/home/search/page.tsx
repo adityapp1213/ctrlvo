@@ -282,7 +282,8 @@ export default async function SearchPage({
         </div>
 
         <section className="flex-1 flex flex-col h-full min-w-0">
-          <div className="w-full">
+          {/* Hide marketing header on mobile chat to avoid duplicate sidebar button */}
+          <div className="hidden md:block w-full">
             <Header />
           </div>
           <div className="flex-1 min-h-0">

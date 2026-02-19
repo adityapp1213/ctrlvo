@@ -1,6 +1,6 @@
 "use client";
 
-import { CornerRightUp, Mic } from "lucide-react";
+import { CornerRightUp, Mic, Pause } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
@@ -344,12 +344,18 @@ export function AIInput({
           type="button"
           onClick={toggleListening}
           className={cn(
-            "absolute top-1/2 -translate-y-1/2 rounded-xl bg-black/5 dark:bg-white/5 py-1 px-1 transition-all duration-200",
-            (isListening || isSpeechProcessing) && "animate-pulse bg-accent text-accent-foreground",
+            "absolute top-1/2 -translate-y-1/2 rounded-xl py-1 px-1 transition-all duration-200",
+            isListening
+              ? "bg-accent text-accent-foreground"
+              : "bg-black/5 dark:bg-white/5",
             inputValue ? "right-10" : "right-3"
           )}
         >
-          <Mic className="w-4 h-4 text-black/70 dark:text-white/70" />
+          {isListening ? (
+            <Pause className="w-4 h-4" />
+          ) : (
+            <Mic className="w-4 h-4 text-black/70 dark:text-white/70" />
+          )}
         </button>
         <button
           onClick={handleReset}

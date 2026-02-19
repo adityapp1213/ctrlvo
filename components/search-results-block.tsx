@@ -133,6 +133,7 @@ export function SearchResultsBlock({
 
   const [mediaIndex, setMediaIndex] = useState(0);
   const mediaTouchStartXRef = useRef<number | null>(null);
+  const [shoppingIndex, setShoppingIndex] = useState(0);
 
   const handleMediaPrev = () => {
     if (!chatMediaItemsLimited.length) return;
@@ -165,6 +166,20 @@ export function SearchResultsBlock({
     } else {
       handleMediaPrev();
     }
+  };
+
+  const handleShoppingPrev = () => {
+    if (!shoppingItems || shoppingItems.length === 0) return;
+    setShoppingIndex((prev) =>
+      prev === 0 ? shoppingItems.length - 1 : prev - 1
+    );
+  };
+
+  const handleShoppingNext = () => {
+    if (!shoppingItems || shoppingItems.length === 0) return;
+    setShoppingIndex((prev) =>
+      prev === shoppingItems.length - 1 ? 0 : prev + 1
+    );
   };
 
   const renderSummaryWithCitations = (text: string) => {
@@ -358,109 +373,245 @@ export function SearchResultsBlock({
             )}
             {Array.isArray(shoppingItems) && shoppingItems.length > 0 ? (
               <div className="w-full space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                  {shoppingItems.slice(0, 4).map((item, idx) => {
+                <div className="block md:hidden">
+                  {(() => {
+                    const index =
+                      shoppingIndex < 0 || shoppingIndex >= shoppingItems.length
+                        ? 0
+                        : shoppingIndex;
+                    const item = shoppingItems[index];
                     const src = normalizeExternalUrl(item.thumbnailUrl);
                     return (
-                      <a
-                        key={item.id || idx}
-                        href={item.link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex flex-col rounded-lg border bg-accent/40 hover:bg-accent transition-colors p-3 text-left"
-                      >
-                        {src && (
-                          <div className="relative w-full aspect-square mb-3 rounded-md overflow-hidden bg-background/40">
-                            <Image
-                              src={src}
-                              alt={item.title}
-                              fill
-                              className="object-contain"
-                              sizes="(min-width: 1024px) 200px, 33vw"
-                              loading="lazy"
-                              unoptimized
-                              referrerPolicy="no-referrer"
-                            />
-                          </div>
-                        )}
-                        <div className="flex-1 space-y-1">
-                          <div className="text-sm font-medium leading-snug line-clamp-2">
-                            {item.title}
-                          </div>
-                          {item.descriptionSnippet && (
-                            <div className="text-xs text-muted-foreground line-clamp-2">
-                              {item.descriptionSnippet}
+                      <div className="relative max-w-md mx-auto">
+                        <a
+                          href={item.link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex flex-col rounded-lg border bg-accent/40 hover:bg-accent transition-colors p-3 text-left"
+                        >
+                          {src && (
+                            <div className="relative w-full aspect-square mb-3 rounded-md overflow-hidden bg-background/40">
+                              <Image
+                                src={src}
+                                alt={item.title}
+                                fill
+                                className="object-contain"
+                                sizes="(min-width: 1024px) 200px, 80vw"
+                                loading="lazy"
+                                unoptimized
+                                referrerPolicy="no-referrer"
+                              />
                             </div>
                           )}
-                          {item.priceText && (
-                            <div className="text-sm font-semibold">
-                              {item.priceText}
+                          <div className="flex-1 space-y-1">
+                            <div className="text-sm font-medium leading-snug line-clamp-2 break-words">
+                              {item.title}
                             </div>
-                          )}
-                          {(item.rating != null || item.reviewCount != null) && (
-                            <div className="text-xs text-muted-foreground">
-                              {item.rating != null && (
-                                <span>{item.rating.toFixed(1)}</span>
-                              )}
-                              {item.rating != null && item.reviewCount != null && (
-                                <span> • </span>
-                              )}
-                              {item.reviewCount != null && (
-                                <span>
-                                  {item.reviewCount.toLocaleString()} reviews
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          {Array.isArray(item.additionalImageUrls) &&
-                            item.additionalImageUrls.length > 0 && (
-                              <div className="mt-2 flex gap-1">
-                                {item.additionalImageUrls.slice(0, 3).map((url, i) => {
-                                  const extraSrc = normalizeExternalUrl(url);
-                                  if (!extraSrc) return null;
-                                  return (
-                                    <div
-                                      key={i}
-                                      className="relative h-10 w-10 rounded-md overflow-hidden bg-background/40"
-                                    >
-                                      <Image
-                                        src={extraSrc}
-                                        alt={item.title}
-                                        fill
-                                        className="object-cover"
-                                        sizes="40px"
-                                        loading="lazy"
-                                        unoptimized
-                                        referrerPolicy="no-referrer"
-                                      />
-                                    </div>
-                                  );
-                                })}
+                            {item.descriptionSnippet && (
+                              <div className="text-xs text-muted-foreground line-clamp-2 break-words">
+                                {item.descriptionSnippet}
                               </div>
                             )}
-                        </div>
-                        {item.source && (
-                          <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-                            {item.sourceIconUrl && normalizeExternalUrl(item.sourceIconUrl) && (
-                              <span className="relative h-4 w-4 overflow-hidden rounded-full bg-background/60">
-                                <Image
-                                  src={normalizeExternalUrl(item.sourceIconUrl)!}
-                                  alt={item.source}
-                                  fill
-                                  className="object-contain"
-                                  sizes="16px"
-                                  loading="lazy"
-                                  unoptimized
-                                  referrerPolicy="no-referrer"
-                                />
-                              </span>
+                            {item.priceText && (
+                              <div className="text-sm font-semibold">
+                                {item.priceText}
+                              </div>
                             )}
-                            <span className="truncate">{item.source}</span>
+                            {(item.rating != null || item.reviewCount != null) && (
+                              <div className="text-xs text-muted-foreground">
+                                {item.rating != null && (
+                                  <span>{item.rating.toFixed(1)}</span>
+                                )}
+                                {item.rating != null && item.reviewCount != null && (
+                                  <span> • </span>
+                                )}
+                                {item.reviewCount != null && (
+                                  <span>
+                                    {item.reviewCount.toLocaleString()} reviews
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            {Array.isArray(item.additionalImageUrls) &&
+                              item.additionalImageUrls.length > 0 && (
+                                <div className="mt-2 flex gap-1">
+                                  {item.additionalImageUrls
+                                    .slice(0, 3)
+                                    .map((url, i) => {
+                                      const extraSrc = normalizeExternalUrl(url);
+                                      if (!extraSrc) return null;
+                                      return (
+                                        <div
+                                          key={i}
+                                          className="relative h-10 w-10 rounded-md overflow-hidden bg-background/40"
+                                        >
+                                          <Image
+                                            src={extraSrc}
+                                            alt={item.title}
+                                            fill
+                                            className="object-cover"
+                                            sizes="40px"
+                                            loading="lazy"
+                                            unoptimized
+                                            referrerPolicy="no-referrer"
+                                          />
+                                        </div>
+                                      );
+                                    })}
+                                </div>
+                              )}
                           </div>
+                          {item.source && (
+                            <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                              {item.sourceIconUrl &&
+                                normalizeExternalUrl(item.sourceIconUrl) && (
+                                  <span className="relative h-4 w-4 overflow-hidden rounded-full bg-background/60">
+                                    <Image
+                                      src={normalizeExternalUrl(item.sourceIconUrl)!}
+                                      alt={item.source}
+                                      fill
+                                      className="object-contain"
+                                      sizes="16px"
+                                      loading="lazy"
+                                      unoptimized
+                                      referrerPolicy="no-referrer"
+                                    />
+                                  </span>
+                                )}
+                              <span className="truncate">{item.source}</span>
+                            </div>
+                          )}
+                        </a>
+                        {shoppingItems.length > 1 && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={handleShoppingPrev}
+                              className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/60 text-white rounded-full p-1"
+                            >
+                              <ChevronLeft className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleShoppingNext}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/60 text-white rounded-full p-1"
+                            >
+                              <ChevronRight className="w-4 h-4" />
+                            </button>
+                          </>
                         )}
-                      </a>
+                      </div>
                     );
-                  })}
+                  })()}
+                </div>
+                <div className="hidden md:block">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    {shoppingItems.slice(0, 4).map((item, idx) => {
+                      const src = normalizeExternalUrl(item.thumbnailUrl);
+                      return (
+                        <a
+                          key={item.id || idx}
+                          href={item.link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex flex-col rounded-lg border bg-accent/40 hover:bg-accent transition-colors p-3 text-left"
+                        >
+                          {src && (
+                            <div className="relative w-full aspect-square mb-3 rounded-md overflow-hidden bg-background/40">
+                              <Image
+                                src={src}
+                                alt={item.title}
+                                fill
+                                className="object-contain"
+                                sizes="(min-width: 1024px) 200px, 33vw"
+                                loading="lazy"
+                                unoptimized
+                                referrerPolicy="no-referrer"
+                              />
+                            </div>
+                          )}
+                          <div className="flex-1 space-y-1">
+                            <div className="text-sm font-medium leading-snug line-clamp-2 break-words">
+                              {item.title}
+                            </div>
+                            {item.descriptionSnippet && (
+                              <div className="text-xs text-muted-foreground line-clamp-2 break-words">
+                                {item.descriptionSnippet}
+                              </div>
+                            )}
+                            {item.priceText && (
+                              <div className="text-sm font-semibold">
+                                {item.priceText}
+                              </div>
+                            )}
+                            {(item.rating != null || item.reviewCount != null) && (
+                              <div className="text-xs text-muted-foreground">
+                                {item.rating != null && (
+                                  <span>{item.rating.toFixed(1)}</span>
+                                )}
+                                {item.rating != null && item.reviewCount != null && (
+                                  <span> • </span>
+                                )}
+                                {item.reviewCount != null && (
+                                  <span>
+                                    {item.reviewCount.toLocaleString()} reviews
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            {Array.isArray(item.additionalImageUrls) &&
+                              item.additionalImageUrls.length > 0 && (
+                                <div className="mt-2 flex gap-1">
+                                  {item.additionalImageUrls
+                                    .slice(0, 3)
+                                    .map((url, i) => {
+                                      const extraSrc = normalizeExternalUrl(url);
+                                      if (!extraSrc) return null;
+                                      return (
+                                        <div
+                                          key={i}
+                                          className="relative h-10 w-10 rounded-md overflow-hidden bg-background/40"
+                                        >
+                                          <Image
+                                            src={extraSrc}
+                                            alt={item.title}
+                                            fill
+                                            className="object-cover"
+                                            sizes="40px"
+                                            loading="lazy"
+                                            unoptimized
+                                            referrerPolicy="no-referrer"
+                                          />
+                                        </div>
+                                      );
+                                    })}
+                                </div>
+                              )}
+                          </div>
+                          {item.source && (
+                            <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                              {item.sourceIconUrl &&
+                                normalizeExternalUrl(item.sourceIconUrl) && (
+                                  <span className="relative h-4 w-4 overflow-hidden rounded-full bg-background/60">
+                                    <Image
+                                      src={normalizeExternalUrl(item.sourceIconUrl)!}
+                                      alt={item.source}
+                                      fill
+                                      className="object-contain"
+                                      sizes="16px"
+                                      loading="lazy"
+                                      unoptimized
+                                      referrerPolicy="no-referrer"
+                                    />
+                                  </span>
+                                )}
+                              <span className="truncate">{item.source}</span>
+                            </div>
+                          )}
+                        </a>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             ) : (
