@@ -33,6 +33,7 @@ import { getChatSession, saveChatSession, type PinnedItem } from "@/app/lib/chat
 import { MapBlock } from "@/components/map-block";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
+import { HomeSearchInput } from "../home-search-input";
 import {
   InlineCitation,
   InlineCitationCard,
@@ -1922,384 +1923,378 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
   };
 
   return (
-    <div
-      ref={rootRef}
-      className="flex flex-row flex-1 w-full min-h-0 relative bg-background overflow-hidden"
-    >
-      {askCloudySelection && (
-        <button
-          type="button"
-          className="fixed z-[80] -translate-x-1/2 rounded-full bg-black text-white dark:bg-white dark:text-black px-3 py-1 text-xs shadow-md flex items-center gap-1 hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors"
-          style={{ top: askCloudySelection.top, left: askCloudySelection.left }}
-          onClick={handleAskCloudyClick}
-        >
-          <Quote className="w-3 h-3" />
-          <span>Ask Cloudy</span>
-        </button>
-      )}
-      {lightboxIndex !== null && chatMediaItemsLimited[lightboxIndex] && (
-        <div
-          className="fixed inset-0 z-[70] bg-black/90 flex items-center justify-center"
-          onClick={handleLightboxClose}
-        >
+    <div className="flex flex-col h-full w-full" ref={rootRef}>
+      <div className="flex-1 min-h-0 flex flex-row bg-background overflow-hidden relative">
+        {askCloudySelection && (
           <button
             type="button"
-            onClick={handleLightboxClose}
-            className="absolute top-6 right-6 text-white/80 hover:text-white"
+            className="fixed z-[80] -translate-x-1/2 rounded-full bg-black text-white dark:bg-white dark:text-black px-3 py-1 text-xs shadow-md flex items-center gap-1 hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors"
+            style={{ top: askCloudySelection.top, left: askCloudySelection.left }}
+            onClick={handleAskCloudyClick}
           >
-            <X className="w-6 h-6" />
+            <Quote className="w-3 h-3" />
+            <span>Ask Cloudy</span>
           </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleLightboxPrev();
-            }}
-            className="absolute left-6 text-white/80 hover:text-white"
-          >
-            <ChevronLeft className="w-8 h-8" />
-          </button>
-          <div
-            className="max-w-5xl w-full px-10"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <img
-              src={chatMediaItemsLimited[lightboxIndex].src}
-              alt={chatMediaItemsLimited[lightboxIndex].alt ?? ""}
-              referrerPolicy="no-referrer"
-              className="w-full max-h-[80vh] object-contain rounded-lg"
-            />
-          </div>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleLightboxNext();
-            }}
-            className="absolute right-6 text-white/80 hover:text-white"
-          >
-            <ChevronRight className="w-8 h-8" />
-          </button>
-        </div>
-      )}
-      <div
-        className={cn(
-          "flex flex-col h-full transition-all duration-300 ease-in-out relative",
-          browserTabs.length > 0 ? "w-1/3 min-w-[350px] border-r" : "w-full"
         )}
-      >
-        <div className="flex-1 w-full min-h-0 relative">
-          <Conversation className="w-full h-full">
-            <ConversationContent className="max-w-5xl mx-auto px-4 pt-4 pb-24">
-              {messages.length === 0 &&
-                (!chatHistory?.chat || (chatHistory.chat.count ?? 0) === 0) && (
-                  <>
-                    <Message from="user" className="ml-auto">
-                      <div className="flex items-start gap-3 w-full flex-row-reverse">
-                        {user?.imageUrl ? (
-                          <Image
-                            src={user.imageUrl}
-                            alt={user.fullName || "User"}
-                            width={32}
-                            height={32}
-                            className="h-8 w-8 rounded-full mt-1 shrink-0"
-                          />
-                        ) : (
-                          <div className="h-8 w-8 rounded-full bg-secondary mt-1 shrink-0" />
-                        )}
-                        <MessageContent
-                          data-cloudy-kind="conversation"
-                          data-cloudy-role="user"
-                          data-cloudy-message-id="initial-search"
-                        >
-                          <span className="inline-flex items-center gap-2">
-                            {voiceParam && <Mic className="w-4 h-4" />}
-                            <span>{searchQuery}</span>
-                          </span>
-                        </MessageContent>
-                      </div>
-                    </Message>
 
-                    <Message from="assistant" className="mr-auto">
-                      <div className="flex items-start gap-3 w-full flex-row">
-                        <div className="shrink-0">
-                          <AtomLogo size={28} className="text-foreground" />
-                        </div>
-                        <div className="w-full pt-1">
-                          {overallSummaryLines.length > 0 && !shouldShowTabs && (
-                            <div className="mb-4">
-                              <MessageContent className="mt-1">
-                                {overallSummaryLines.filter(Boolean).join(" ")}
-                              </MessageContent>
-                            </div>
-                          )}
+        {lightboxIndex !== null && chatMediaItemsLimited[lightboxIndex] && (
+          <div
+            className="fixed inset-0 z-[70] bg-black/90 flex items-center justify-center"
+            onClick={handleLightboxClose}
+          >
+            <button
+              type="button"
+              onClick={handleLightboxClose}
+              className="absolute top-6 right-6 text-white/80 hover:text-white"
+            >
+              <X className="w-6 h-6" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleLightboxPrev();
+              }}
+              className="absolute left-6 text-white/80 hover:text-white"
+            >
+              <ChevronLeft className="w-8 h-8" />
+            </button>
+            <div
+              className="max-w-5xl w-full px-10"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <img
+                src={chatMediaItemsLimited[lightboxIndex].src}
+                alt={chatMediaItemsLimited[lightboxIndex].alt ?? ""}
+                referrerPolicy="no-referrer"
+                className="w-full max-h-[80vh] object-contain rounded-lg"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleLightboxNext();
+              }}
+              className="absolute right-6 text-white/80 hover:text-white"
+            >
+              <ChevronRight className="w-8 h-8" />
+            </button>
+          </div>
+        )}
 
-                          {mapLocation && (
-                            <div className="mb-6">
-                              <MessageContent className="mb-2">
-                                I found {mapLocation} on the map. You can view it
-                                in the side panel.
-                              </MessageContent>
-                              <MapBlock
-                                location={mapLocation}
-                                onOpenSideMap={() =>
-                                  handleLinkClick(
-                                    `/home/map-view?location=${encodeURIComponent(
-                                      mapLocation
-                                    )}`,
-                                    `Map: ${mapLocation}`
-                                  )
-                                }
-                              />
-                            </div>
-                          )}
-
-                          {shouldShowTabs && (
-                            <SearchResultsBlock
-                              searchQuery={searchQuery}
-                              overallSummaryLines={overallSummaryLines}
-                              summary={summary}
-                              summaryIsStreaming={chatSummaryStatus === "loading"}
-                              webItems={webItems}
-                              mediaItems={mediaItems}
-                              weatherItems={weatherItems}
-                              youtubeItems={youtubeItems}
-                              shoppingItems={shoppingItems}
-                              shouldShowTabs={shouldShowTabs}
-                              onLinkClick={handleLinkClick}
-                              onPinItem={handleTogglePinItem}
-                              pinnedIds={pinnedIds}
-                              onMediaLoad={handleChatMediaLoaded}
+        <div
+          className={cn(
+            "flex flex-col h-full transition-all duration-300 ease-in-out relative",
+            browserTabs.length > 0 ? "w-1/3 min-w-[350px] border-r" : "w-full"
+          )}
+        >
+          <div className="flex-1 w-full min-h-0 relative overflow-y-auto overflow-x-hidden">
+            <Conversation className="w-full h-full">
+              <ConversationContent className="max-w-5xl mx-auto px-4 pt-4 pb-64 md:pb-28">
+                {messages.length === 0 &&
+                  (!chatHistory?.chat || (chatHistory.chat.count ?? 0) === 0) && (
+                    <>
+                      <Message from="user" className="ml-auto">
+                        <div className="flex items-center gap-3 w-full flex-row-reverse">
+                          {user?.imageUrl ? (
+                            <Image
+                              src={user.imageUrl}
+                              alt={user.fullName || "User"}
+                              width={32}
+                              height={32}
+                            className="h-8 w-8 rounded-full shrink-0"
                             />
+                          ) : (
+                          <div className="h-8 w-8 rounded-full bg-secondary shrink-0" />
                           )}
-
-                          {!shouldShowTabs && (
-                            <>
-                              {webItems.length ? (
-                                <>
-                                  <div className="text-sm font-medium mb-2">
-                                    Search results
-                                  </div>
-                                  {webItems.map((item, i) => (
-                                    <div key={i} className="space-y-2 mb-8">
-                                      <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm">
-                                        <a
-                                          href={item.link}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="text-blue-600 underline underline-offset-2 truncate block"
-                                          title={item.title}
-                                          onClick={(e) => {
-                                            e.preventDefault();
-                                            handleLinkClick(item.link, item.title);
-                                          }}
-                                        >
-                                          {formatDisplayUrl(item.link)}
-                                        </a>
-                                      </div>
-                                      <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm text-muted-foreground">
-                                        {item.summaryLines[0]}
-                                      </div>
-                                      <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm text-muted-foreground">
-                                        {item.summaryLines[1]}
-                                      </div>
-                                    </div>
-                                  ))}
-                                </>
-                              ) : null}
-                            </>
-                          )}
+                          <MessageContent
+                            data-cloudy-kind="conversation"
+                            data-cloudy-role="user"
+                            data-cloudy-message-id="initial-search"
+                          >
+                            <span className="inline-flex items-center gap-2">
+                              {voiceParam && <Mic className="w-4 h-4" />}
+                              <span>{searchQuery}</span>
+                            </span>
+                          </MessageContent>
                         </div>
-                      </div>
-                    </Message>
-                  </>
-                )}
+                      </Message>
 
-              {messages.length > 0 && (
-                <div className="mt-6 space-y-4">
-                  {messages.map((msg, index) => (
-                    <Message
-                      key={msg.id}
-                      from={msg.role}
-                      className={cn(msg.role === "user" ? "ml-auto" : "mr-auto")}
-                    >
-                      {msg.type === "search" && msg.data ? (
+                      <Message from="assistant" className="mr-auto">
                         <div className="flex items-start gap-3 w-full flex-row">
                           <div className="shrink-0">
                             <AtomLogo size={28} className="text-foreground" />
                           </div>
                           <div className="w-full pt-1">
-                            {msg.data.mapLocation && (
-                                <div className="mb-6">
-                                    <MessageContent className="mb-2">
-                                        I found {msg.data.mapLocation} on the map. You can view it in the side panel.
-                                    </MessageContent>
-                                    <MapBlock 
-                                        location={msg.data.mapLocation} 
-                                        onOpenSideMap={() => {
-                                          const loc = msg.data?.mapLocation;
-                                          if (!loc) return;
-                                          handleLinkClick(
-                                            `/home/map-view?location=${encodeURIComponent(loc)}`,
-                                            `Map: ${loc}`
-                                          );
-                                        }} 
-                                    />
-                                </div>
+                            {overallSummaryLines.length > 0 && !shouldShowTabs && (
+                              <div className="mb-4">
+                                <MessageContent className="mt-1">
+                                  {overallSummaryLines.filter(Boolean).join(" ")}
+                                </MessageContent>
+                              </div>
                             )}
-                            <SearchResultsBlock
-                              searchQuery={msg.data.searchQuery}
-                              overallSummaryLines={msg.data.overallSummaryLines}
-                              summary={msg.data.summary}
-                              summaryIsStreaming={
-                                pendingStream?.type === "search" &&
-                                pendingStream?.messageId === msg.id
-                              }
-                              webItems={msg.data.webItems}
-                              mediaItems={msg.data.mediaItems}
-                              weatherItems={msg.data.weatherItems}
-                              youtubeItems={msg.data.youtubeItems}
-                              shoppingItems={msg.data.shoppingItems}
-                              shouldShowTabs={msg.data.shouldShowTabs}
-                              onLinkClick={handleLinkClick}
-                              onPinItem={handleTogglePinItem}
-                              pinnedIds={pinnedIds}
-                              onMediaLoad={
-                                msg.id === pendingMediaLoad.messageId
-                                  ? handlePendingMediaLoaded
-                                  : undefined
-                              }
-                            />
-                          {renderCitation(msg, index)}
+
+                            {mapLocation && (
+                              <div className="mb-6">
+                                <MessageContent className="mb-2">
+                                  I found {mapLocation} on the map. You can view it
+                                  in the side panel.
+                                </MessageContent>
+                                <MapBlock
+                                  location={mapLocation}
+                                  onOpenSideMap={() =>
+                                    handleLinkClick(
+                                      `/home/map-view?location=${encodeURIComponent(
+                                        mapLocation
+                                      )}`,
+                                      `Map: ${mapLocation}`
+                                    )
+                                  }
+                                />
+                              </div>
+                            )}
+
+                            {shouldShowTabs && (
+                              <SearchResultsBlock
+                                searchQuery={searchQuery}
+                                overallSummaryLines={overallSummaryLines}
+                                summary={summary}
+                                summaryIsStreaming={chatSummaryStatus === "loading"}
+                                webItems={webItems}
+                                mediaItems={mediaItems}
+                                weatherItems={weatherItems}
+                                youtubeItems={youtubeItems}
+                                shoppingItems={shoppingItems}
+                                shouldShowTabs={shouldShowTabs}
+                                onLinkClick={handleLinkClick}
+                                onPinItem={handleTogglePinItem}
+                                pinnedIds={pinnedIds}
+                                onMediaLoad={handleChatMediaLoaded}
+                              />
+                            )}
+
+                            {!shouldShowTabs && (
+                              <>
+                                {webItems.length ? (
+                                  <>
+                                    <div className="text-sm font-medium mb-2">
+                                      Search results
+                                    </div>
+                                    {webItems.map((item, i) => (
+                                      <div key={i} className="space-y-2 mb-8">
+                                        <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm">
+                                          <a
+                                            href={item.link}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-blue-600 underline underline-offset-2 truncate block"
+                                            title={item.title}
+                                            onClick={(e) => {
+                                              e.preventDefault();
+                                              handleLinkClick(item.link, item.title);
+                                            }}
+                                          >
+                                            {formatDisplayUrl(item.link)}
+                                          </a>
+                                        </div>
+                                        <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                                          {item.summaryLines[0]}
+                                        </div>
+                                        <div className="bg-accent w-full rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                                          {item.summaryLines[1]}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </>
+                                ) : null}
+                              </>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <>
-                        {msg.role === "assistant" ? (
+                      </Message>
+                    </>
+                  )}
+
+                {messages.length > 0 && (
+                  <div className="mt-6 space-y-4">
+                    {messages.map((msg, index) => (
+                      <Message
+                        key={msg.id}
+                        from={msg.role}
+                        className={cn(msg.role === "user" ? "ml-auto" : "mr-auto")}
+                      >
+                        {msg.type === "search" && msg.data ? (
                           <div className="flex items-start gap-3 w-full flex-row">
                             <div className="shrink-0">
                               <AtomLogo size={28} className="text-foreground" />
                             </div>
                             <div className="w-full pt-1">
-                          <MessageContent
-                            className="mt-1"
-                            data-cloudy-kind="conversation"
-                            data-cloudy-role={msg.role}
-                            data-cloudy-message-id={String(msg.id)}
-                          >
-                            {msg.content}
-                          </MessageContent>
-                          {renderCitation(msg, index, "inline")}
+                              {msg.data.mapLocation && (
+                                <div className="mb-6">
+                                  <MessageContent className="mb-2">
+                                    I found {msg.data.mapLocation} on the map. You
+                                    can view it in the side panel.
+                                  </MessageContent>
+                                  <MapBlock
+                                    location={msg.data.mapLocation}
+                                    onOpenSideMap={() => {
+                                      const loc = msg.data?.mapLocation;
+                                      if (!loc) return;
+                                      handleLinkClick(
+                                        `/home/map-view?location=${encodeURIComponent(
+                                          loc
+                                        )}`,
+                                        `Map: ${loc}`
+                                      );
+                                    }}
+                                  />
+                                </div>
+                              )}
+                              <SearchResultsBlock
+                                searchQuery={msg.data.searchQuery}
+                                overallSummaryLines={msg.data.overallSummaryLines}
+                                summary={msg.data.summary}
+                                summaryIsStreaming={
+                                  pendingStream?.type === "search" &&
+                                  pendingStream?.messageId === msg.id
+                                }
+                                webItems={msg.data.webItems}
+                                mediaItems={msg.data.mediaItems}
+                                weatherItems={msg.data.weatherItems}
+                                youtubeItems={msg.data.youtubeItems}
+                                shoppingItems={msg.data.shoppingItems}
+                                shouldShowTabs={msg.data.shouldShowTabs}
+                                onLinkClick={handleLinkClick}
+                                onPinItem={handleTogglePinItem}
+                                pinnedIds={pinnedIds}
+                                onMediaLoad={
+                                  msg.id === pendingMediaLoad.messageId
+                                    ? handlePendingMediaLoaded
+                                    : undefined
+                                }
+                              />
+                              {renderCitation(msg, index)}
                             </div>
                           </div>
                         ) : (
-                          <div className="flex items-start gap-3 w-full flex-row-reverse">
-                            {user?.imageUrl ? (
-                              <Image
-                                src={user.imageUrl}
-                                alt={user.fullName || "User"}
-                                width={32}
-                                height={32}
-                                className="h-8 w-8 rounded-full mt-1 shrink-0"
-                              />
-                            ) : (
-                              <div className="h-8 w-8 rounded-full bg-secondary mt-1 shrink-0" />
-                            )}
-                            <div className="w-full max-w-xl flex flex-col items-end gap-1">
-                              {msg.askCloudy?.selectedText && (
-                                <div className="max-w-full">
-                                  <div className="inline-flex items-center gap-2 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
-                                    <span>↩</span>
-                                    <span className="truncate max-w-[220px]">
-                                      {msg.askCloudy.selectedText}
-                                    </span>
-                                  </div>
+                          <>
+                            {msg.role === "assistant" ? (
+                              <div className="flex items-start gap-3 w-full flex-row">
+                                <div className="shrink-0">
+                                  <AtomLogo size={28} className="text-foreground" />
                                 </div>
-                              )}
-                              <MessageContent
-                                data-cloudy-kind="conversation"
-                                data-cloudy-role={msg.role}
-                                data-cloudy-message-id={String(msg.id)}
-                              >
-                                {msg.content}
-                              </MessageContent>
-                            </div>
-                          </div>
+                                <div className="w-full pt-1">
+                                  <MessageContent
+                                    className="mt-1"
+                                    data-cloudy-kind="conversation"
+                                    data-cloudy-role={msg.role}
+                                    data-cloudy-message-id={String(msg.id)}
+                                  >
+                                    {msg.content}
+                                  </MessageContent>
+                                  {renderCitation(msg, index, "inline")}
+                                </div>
+                              </div>
+                        ) : (
+                          <div className="flex items-center gap-3 w-full flex-row-reverse">
+                                {user?.imageUrl ? (
+                                  <Image
+                                    src={user.imageUrl}
+                                    alt={user.fullName || "User"}
+                                    width={32}
+                                    height={32}
+                                className="h-8 w-8 rounded-full shrink-0"
+                                  />
+                                ) : (
+                              <div className="h-8 w-8 rounded-full bg-secondary shrink-0" />
+                                )}
+                                <div className="w-full max-w-xl flex flex-col items-end gap-1">
+                                  {msg.askCloudy?.selectedText && (
+                                    <div className="max-w-full">
+                                      <div className="inline-flex items-center gap-2 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
+                                        <span>↩</span>
+                                        <span className="truncate max-w-[220px]">
+                                          {msg.askCloudy.selectedText}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  )}
+                                  <MessageContent
+                                    data-cloudy-kind="conversation"
+                                    data-cloudy-role={msg.role}
+                                    data-cloudy-message-id={String(msg.id)}
+                                  >
+                                    {msg.content}
+                                  </MessageContent>
+                                </div>
+                              </div>
+                            )}
+                          </>
                         )}
-                      </>
+                      </Message>
+                    ))}
+                    {isChatLoading && shouldShowTabs && (
+                      <Message from="assistant" className="mr-auto">
+                        <div className="flex items-start gap-3 w-full flex-row">
+                          <div className="shrink-0">
+                            <AtomLogo size={28} className="text-foreground" />
+                          </div>
+                          <div className="w-full pt-1">
+                            <MessageContent className="mt-1 text-blue-600 dark:text-blue-400">
+                              Searching up…
+                            </MessageContent>
+                          </div>
+                        </div>
+                      </Message>
                     )}
-                  </Message>
-                ))}
-                {isChatLoading && shouldShowTabs && (
-                  <Message from="assistant" className="mr-auto">
-                    <div className="flex items-start gap-3 w-full flex-row">
-                      <div className="shrink-0">
-                        <AtomLogo size={28} className="text-foreground" />
-                      </div>
-                      <div className="w-full pt-1">
-                        <MessageContent className="mt-1 text-blue-600 dark:text-blue-400">
-                          Searching up…
-                        </MessageContent>
-                      </div>
-                    </div>
-                  </Message>
-                )}
-              </div>
-              )}
-            </ConversationContent>
-          <ConversationScrollButton />
-          </Conversation>
-        </div>
-        {primaryTab === "chat" && (
-          <div className="w-full px-4 pb-4">
-            {(searchQuery || "").toLowerCase().startsWith("shopping ") &&
-              shoppingLocationLoaded &&
-              !shoppingLocation && (
-                <div className="mb-3 rounded-md border bg-accent px-3 py-2 text-xs flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <span className="font-medium">Set your shopping location</span>
-                  <div className="flex items-center gap-2 flex-1">
-                    <input
-                      type="text"
-                      value={shoppingLocation}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setShoppingLocation(val);
-                        if (typeof window !== "undefined") {
-                          try {
-                            window.localStorage.setItem("shopping_location", val);
-                          } catch {}
-                        }
-                      }}
-                      placeholder="City, region or country"
-                      className="flex-1 rounded-md border px-2 py-1 text-xs bg-background"
-                    />
                   </div>
-                </div>
-              )}
-            <AIInputFooter
-              onSubmit={handleChatSubmit}
-              inputValue={chatInputValue}
-              onInputChange={setChatInputValue}
-              onSpeechProcessingChange={setIsSpeechProcessing}
-              askCloudyOverlayText={askCloudyContext?.selectedText ?? null}
-              onClearAskCloudyOverlay={() => setAskCloudyContext(null)}
+                )}
+              </ConversationContent>
+              <ConversationScrollButton />
+            </Conversation>
+          </div>
+        </div>
+
+        {browserTabs.length > 0 && (
+          <div className="flex-1 w-full h-full min-w-0 animate-in slide-in-from-right duration-300">
+            <Browser
+              tabs={browserTabs}
+              activeTabId={activeTabId}
+              onCloseTab={handleCloseTab}
+              onSwitchTab={setActiveTabId}
+              onClose={handleCloseBrowser}
+              onAddToChat={handleAddToChat}
             />
           </div>
         )}
       </div>
 
-      {/* Browser Panel */}
-      {browserTabs.length > 0 && (
-        <div className="flex-1 w-full h-full min-w-0 animate-in slide-in-from-right duration-300">
-          <Browser
-            tabs={browserTabs}
-            activeTabId={activeTabId}
-            onCloseTab={handleCloseTab}
-            onSwitchTab={setActiveTabId}
-            onClose={handleCloseBrowser}
-            onAddToChat={handleAddToChat}
-          />
-        </div>
+      {primaryTab === "chat" && (
+        <>
+          {/* Desktop: home-style desktop input (inside layout flow) */}
+          <div className="hidden md:block border-t bg-white/70 backdrop-blur supports-[backdrop-filter]:bg-white/50 px-4 py-4 shrink-0">
+            <div className="w-full max-w-3xl mx-auto">
+              <HomeSearchInput
+                onSubmitOverride={(value, meta) => {
+                  handleChatSubmit(value, meta);
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Mobile: home-style mobile input, fixed to bottom of viewport */}
+          <div className="block md:hidden fixed inset-x-0 bottom-0 border-t bg-white/70 backdrop-blur supports-[backdrop-filter]:bg-white/50 px-4 py-3">
+            <div className="w-full max-w-3xl mx-auto">
+              <HomeSearchInput
+                variant="mobile"
+                onSubmitOverride={(value, meta) => {
+                  handleChatSubmit(value, meta);
+                }}
+              />
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

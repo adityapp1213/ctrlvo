@@ -61,7 +61,10 @@ export const DesktopSidebar = ({ className, children, ...props }: React.Componen
   const { open, animate } = useSidebar();
   return (
     <motion.div
-      className={cn("h-full px-4 py-4 hidden md:flex md:flex-col bg-neutral-100 dark:bg-neutral-800 w-[300px] flex-shrink-0", className)}
+      className={cn(
+        "h-full px-4 py-4 hidden md:flex md:flex-col bg-neutral-100 dark:bg-neutral-800 w-[300px] flex-shrink-0",
+        className
+      )}
       animate={{ width: animate ? (open ? "300px" : "60px") : "300px" }}
       {...props}
     >
@@ -74,27 +77,69 @@ export const MobileSidebar = ({ className, children, ...props }: React.Component
   const { open, setOpen } = useSidebar();
   return (
     <>
-      <div className={cn("h-10 px-4 py-4 flex flex-row md:hidden items-center justify-between bg-neutral-100 dark:bg-neutral-800 w-full")}{...props}>
-        <div className="flex justify-end z-20 w-full">
-          <Menu className="text-neutral-800 dark:text-neutral-200 cursor-pointer" onClick={() => setOpen(!open)} />
-        </div>
-        <AnimatePresence>
-          {open && (
-            <motion.div
-              initial={{ x: "-100%", opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: "-100%", opacity: 0 }}
-              transition={{ duration: 0.3, ease: "easeInOut" }}
-              className={cn("fixed h-full w-full inset-0 bg-white dark:bg-neutral-900 p-10 z-[100] flex flex-col justify-between", className)}
-            >
-              <div className="absolute right-10 top-10 z-50 text-neutral-800 dark:text-neutral-200 cursor-pointer" onClick={() => setOpen(!open)}>
-                <X />
-              </div>
-              {children}
-            </motion.div>
-          )}
-        </AnimatePresence>
+      <div
+        className={cn(
+          "px-4 pt-4 pb-2 flex flex-row md:hidden items-center bg-white dark:bg-neutral-900 w-full",
+          className
+        )}
+        {...props}
+      >
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="flex items-center gap-2 text-neutral-900 dark:text-neutral-100"
+          aria-label="Open sidebar"
+        >
+          <AtomLogo
+            className="h-9 w-auto text-neutral-900 dark:text-neutral-100"
+            ariaLabel="App logo"
+            title="App"
+            size={36}
+          />
+          <span className="text-lg font-semibold">
+            atom ctrl
+          </span>
+        </button>
       </div>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ x: "-100%", opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: "-100%", opacity: 0 }}
+            transition={{ duration: 0.3, ease: "easeInOut" }}
+            className={cn(
+              "fixed inset-0 z-[100] bg-white dark:bg-neutral-900 flex flex-col md:hidden",
+              className
+            )}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-200 dark:border-neutral-800">
+              <div className="flex items-center gap-2">
+                <AtomLogo
+                  className="h-8 w-auto text-neutral-900 dark:text-neutral-100"
+                  ariaLabel="App logo"
+                  title="App"
+                  size={32}
+                />
+                <span className="text-base font-semibold text-neutral-900 dark:text-neutral-100">
+                  atom ctrl
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="text-neutral-800 dark:text-neutral-200"
+                aria-label="Close sidebar"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              {children}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 };
@@ -251,7 +296,7 @@ const AppSidebarContent = () => {
 
   return (
     <div className="flex h-full flex-col gap-4">
-      <div className="flex items-center justify-between gap-2">
+      <div className="hidden md:flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <AtomLogo
             className="h-8 w-auto text-neutral-900 dark:text-neutral-100"

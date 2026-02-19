@@ -366,7 +366,7 @@ export const Response = memo(
     return (
       <div
         className={cn(
-          'size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
+          "size-full break-words whitespace-pre-wrap [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
           className
         )}
         {...(props as any)}

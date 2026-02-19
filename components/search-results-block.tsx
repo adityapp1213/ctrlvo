@@ -1,7 +1,7 @@
 // Renders AI search results with tabs for results, media, and videos
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Image from "next/image";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -126,10 +126,46 @@ export function SearchResultsBlock({
   const chatMediaItems = mediaItems
     .map((item) => ({ ...item, src: normalizeExternalUrl(item.src) }))
     .filter((item) => Boolean(item.src)) as Array<{
-    src: string;
-    alt?: string;
-  }>;
+      src: string;
+      alt?: string;
+    }>;
   const chatMediaItemsLimited = chatMediaItems.slice(0, 3);
+
+  const [mediaIndex, setMediaIndex] = useState(0);
+  const mediaTouchStartXRef = useRef<number | null>(null);
+
+  const handleMediaPrev = () => {
+    if (!chatMediaItemsLimited.length) return;
+    setMediaIndex((prev) =>
+      prev === 0 ? chatMediaItemsLimited.length - 1 : prev - 1
+    );
+  };
+
+  const handleMediaNext = () => {
+    if (!chatMediaItemsLimited.length) return;
+    setMediaIndex((prev) =>
+      prev === chatMediaItemsLimited.length - 1 ? 0 : prev + 1
+    );
+  };
+
+  const handleMediaTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    const touch = e.touches[0];
+    mediaTouchStartXRef.current = touch.clientX;
+  };
+
+  const handleMediaTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (mediaTouchStartXRef.current == null) return;
+    const touch = e.changedTouches[0];
+    const dx = touch.clientX - mediaTouchStartXRef.current;
+    mediaTouchStartXRef.current = null;
+    const threshold = 40;
+    if (Math.abs(dx) < threshold) return;
+    if (dx < 0) {
+      handleMediaNext();
+    } else {
+      handleMediaPrev();
+    }
+  };
 
   const renderSummaryWithCitations = (text: string) => {
     const value = String(text || "");
@@ -430,25 +466,73 @@ export function SearchResultsBlock({
             ) : (
               chatMediaItemsLimited.length > 0 && (
                 <div className="w-full">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {chatMediaItemsLimited.map((item, i) => (
-                      <button
-                        key={`${item.src}-${i}`}
-                        type="button"
-                        onClick={() => setLightboxIndex(i)}
+                  <div className="block md:hidden">
+                    <div className="relative max-w-md mx-auto">
+                      <div
                         className="aspect-video bg-accent rounded-md border overflow-hidden flex items-center justify-center"
+                        onTouchStart={handleMediaTouchStart}
+                        onTouchEnd={handleMediaTouchEnd}
+                        onClick={() => setLightboxIndex(mediaIndex)}
                       >
-                        <img
-                          src={item.src}
-                          alt={item.alt ?? ""}
-                          loading={i < 3 ? "eager" : "lazy"}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover"
-                          onLoad={onMediaLoad}
-                          onError={onMediaLoad}
-                        />
-                      </button>
-                    ))}
+                        {chatMediaItemsLimited[mediaIndex] && (
+                          <img
+                            src={chatMediaItemsLimited[mediaIndex].src}
+                            alt={chatMediaItemsLimited[mediaIndex].alt ?? ""}
+                            loading="eager"
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover"
+                            onLoad={onMediaLoad}
+                            onError={onMediaLoad}
+                          />
+                        )}
+                        {chatMediaItemsLimited.length > 1 && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMediaPrev();
+                              }}
+                              className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/60 text-white rounded-full p-1"
+                            >
+                              <ChevronLeft className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMediaNext();
+                              }}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/60 text-white rounded-full p-1"
+                            >
+                              <ChevronRight className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="hidden md:block">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {chatMediaItemsLimited.map((item, i) => (
+                        <button
+                          key={`${item.src}-${i}`}
+                          type="button"
+                          onClick={() => setLightboxIndex(i)}
+                          className="aspect-video bg-accent rounded-md border overflow-hidden flex items-center justify-center"
+                        >
+                          <img
+                            src={item.src}
+                            alt={item.alt ?? ""}
+                            loading={i < 3 ? "eager" : "lazy"}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover"
+                            onLoad={onMediaLoad}
+                            onError={onMediaLoad}
+                          />
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               )

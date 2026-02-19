@@ -269,30 +269,41 @@ export default async function SearchPage({
   }
 
   return (
-    <main className="h-screen bg-white flex overflow-hidden">
-      <div className="sticky top-0 h-screen self-start">
+    <main className="h-screen w-full bg-white flex overflow-hidden">
+      {/* Desktop: persistent left sidebar */}
+      <div className="hidden lg:block h-full shrink-0">
         <AppSidebar />
       </div>
-      <section className="flex-1 flex flex-col items-center">
-        <div className="w-full">
-          <Header />
+
+      {/* Mobile / small screens: sidebar in sticky top bar */}
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
+        <div className="lg:hidden sticky top-0 z-40">
+          <AppSidebar />
         </div>
-        <SearchConversationShell
-          tab={activeTab} // Use activeTab instead of tab to reflect auto-switching
-          searchQuery={searchQuery}
-          shouldShowTabs={shouldShowTabs}
-          overallSummaryLines={overallSummaryLines}
-          summary={summary}
-          webItems={webItems}
-          mediaItems={mediaItems}
-          isWeatherQuery={isWeatherQuery}
-          weatherItems={weatherItems}
-          youtubeItems={youtubeItems}
-          mapLocation={mapLocation}
-          googleMapsKey={process.env.GOOGLE_MAP_API_KEY}
-          shoppingItems={shoppingItems}
-        />
-      </section>
+
+        <section className="flex-1 flex flex-col h-full min-w-0">
+          <div className="w-full">
+            <Header />
+          </div>
+          <div className="flex-1 min-h-0">
+            <SearchConversationShell
+              tab={activeTab}
+              searchQuery={searchQuery}
+              shouldShowTabs={shouldShowTabs}
+              overallSummaryLines={overallSummaryLines}
+              summary={summary}
+              webItems={webItems}
+              mediaItems={mediaItems}
+              isWeatherQuery={isWeatherQuery}
+              weatherItems={weatherItems}
+              youtubeItems={youtubeItems}
+              mapLocation={mapLocation}
+              googleMapsKey={process.env.GOOGLE_MAP_API_KEY}
+              shoppingItems={shoppingItems}
+            />
+          </div>
+        </section>
+      </div>
     </main>
   );
 }

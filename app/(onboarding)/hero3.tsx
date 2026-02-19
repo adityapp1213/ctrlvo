@@ -79,6 +79,7 @@ const Hero3 = ({
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
   const [eyePos, setEyePos] = useState({ x: 0, y: 0 });
   const [blink, setBlink] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   function trackEvent(name: string, props?: Record<string, unknown>) {
     const body = JSON.stringify({ name, props, ts: Date.now(), vw: window.innerWidth });
     const url = "/api/analytics";
@@ -116,6 +117,15 @@ const Hero3 = ({
       setTimeout(() => setBlink(false), 200);
     }, 3000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const updateIsMobile = () => {
+      setIsMobile(window.innerWidth < 640);
+    };
+    updateIsMobile();
+    window.addEventListener("resize", updateIsMobile);
+    return () => window.removeEventListener("resize", updateIsMobile);
   }, []);
 
   async function handleSignUp() {
@@ -248,10 +258,11 @@ const Hero3 = ({
                 key={side}
                 className="absolute flex justify-center items-end overflow-hidden"
                 style={{
-                  top: 80,
-                  left: idx === 0 ? 140 : 260,
-                  width: 32,
-                  height: blink ? 6 : 42,
+                  top: isMobile ? 60 : 80,
+                  left: isMobile ? (idx === 0 ? "55%" : "75%") : idx === 0 ? 140 : 260,
+                  transform: isMobile ? "translateX(-50%)" : undefined,
+                  width: isMobile ? 24 : 32,
+                  height: blink ? (isMobile ? 4 : 6) : (isMobile ? 30 : 42),
                   borderRadius: blink ? "2px" : "50% / 60%",
                   backgroundColor: "white",
                   transition: "all 0.15s ease",
@@ -261,10 +272,10 @@ const Hero3 = ({
                   <div
                     className="bg-black"
                     style={{
-                      width: 16,
-                      height: 16,
+                      width: isMobile ? 10 : 16,
+                      height: isMobile ? 10 : 16,
                       borderRadius: "50%",
-                      marginBottom: 4,
+                      marginBottom: isMobile ? 2 : 4,
                       transform: `translate(${eyePos.x}px, ${eyePos.y * 0}px)`,
                       transition: "all 0.1s ease",
                     }}

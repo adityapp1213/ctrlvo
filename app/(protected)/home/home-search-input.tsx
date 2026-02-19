@@ -11,15 +11,16 @@ import {
   PromptInputProvider,
   useProviderAttachments,
 } from "@/components/ai-elements/prompt-input";
+import { Suggestions, Suggestion } from "@/components/ai-elements/suggestion";
+import type { AIInputSubmitMeta } from "@/components/ui/ai-input";
 import {
   ArrowUp,
-  AudioLines,
   Globe,
   Grid,
-  Map,
   Mic,
   Plus,
   Search,
+  ShoppingBag,
   Youtube,
 } from "lucide-react";
 import {
@@ -32,15 +33,28 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api } from "../../../convex/_generated/api";
 
-export function HomeSearchInput() {
+type HomeSearchInputProps = {
+  variant?: "desktop" | "mobile";
+  onSubmitOverride?: (value: string, meta?: AIInputSubmitMeta) => void;
+};
+
+export function HomeSearchInput({
+  variant = "desktop",
+  onSubmitOverride,
+}: HomeSearchInputProps) {
   return (
     <PromptInputProvider>
-      <HomeSearchInputContent />
+      <HomeSearchInputContent variant={variant} onSubmitOverride={onSubmitOverride} />
     </PromptInputProvider>
   );
 }
 
-function HomeSearchInputContent() {
+type HomeSearchInputContentProps = {
+  variant: "desktop" | "mobile";
+  onSubmitOverride?: (value: string, meta?: AIInputSubmitMeta) => void;
+};
+
+function HomeSearchInputContent({ variant, onSubmitOverride }: HomeSearchInputContentProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user } = useUser();
@@ -55,8 +69,38 @@ function HomeSearchInputContent() {
   const [isSearch, setIsSearch] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [hasRecognition, setHasRecognition] = useState(false);
-  const [selectedApp, setSelectedApp] = useState<"apps" | "youtube" | "maps" | "shopping">("apps");
+  const [selectedApp, setSelectedApp] = useState<"apps" | "youtube" | "shopping">("apps");
   const [chatSessionId, setChatSessionId] = useState<string | null>(null);
+
+  const suggestions = [
+    "Search the web for me",
+    "Help me shop for something",
+    "Find a YouTube video",
+    "Explain a concept",
+  ];
+
+  const placeholderTexts = ["Ask me anything!", "How can i help ?"];
+  const [placeholderIndex, setPlaceholderIndex] = useState(0);
+  const [placeholderText, setPlaceholderText] = useState(placeholderTexts[0]);
+  const [placeholderFadingOut, setPlaceholderFadingOut] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const interval = window.setInterval(() => {
+      setPlaceholderFadingOut(true);
+      window.setTimeout(() => {
+        setPlaceholderIndex((prev) => {
+          const next = (prev + 1) % placeholderTexts.length;
+          setPlaceholderText(placeholderTexts[next]);
+          return next;
+        });
+        setPlaceholderFadingOut(false);
+      }, 250);
+    }, 4000);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -87,9 +131,17 @@ function HomeSearchInputContent() {
     })();
   }, [userId, initChat]);
 
+  const handleSuggestionClick = (value: string) => {
+    setInput(value);
+    submitText(value, "text");
+  };
+
   const submitText = (rawText: string, source?: "text" | "voice") => {
     let text = rawText;
     if (!text.trim()) return;
+
+    setInput("");
+    inputValueRef.current = "";
 
     const effectiveSource: "text" | "voice" =
       source ?? (isVoiceInputRef.current ? "voice" : "text");
@@ -120,18 +172,16 @@ function HomeSearchInputContent() {
 
     if (selectedApp === "youtube") {
       text = `YouTube ${text}`;
-      router.push(
-        `/home/search?q=${encodeURIComponent(text)}${voiceParam}${chatIdParam}`
-      );
-      return;
-    } else if (selectedApp === "maps") {
-      text = `Map of ${text}`;
-      router.push(
-        `/home/search?q=${encodeURIComponent(text)}&tab=map${voiceParam}${chatIdParam}`
-      );
-      return;
     } else if (selectedApp === "shopping") {
       text = `Shopping ${text}`;
+    }
+
+    if (onSubmitOverride) {
+      onSubmitOverride(text, { source: effectiveSource });
+      return;
+    }
+
+    if (selectedApp === "youtube" || selectedApp === "shopping") {
       router.push(
         `/home/search?q=${encodeURIComponent(text)}${voiceParam}${chatIdParam}`
       );
@@ -151,6 +201,35 @@ function HomeSearchInputContent() {
     if (typeof window === "undefined") return;
     setHasRecognition("mediaDevices" in navigator && "MediaRecorder" in window);
   }, []);
+
+  const renderActionButton = () =>
+    input.trim().length === 0 ? (
+      <Button
+        type="button"
+        variant="outline"
+        size="icon-lg"
+        className={cn(
+          "rounded-full",
+          isListening &&
+            "animate-pulse bg-accent text-accent-foreground border-transparent"
+        )}
+        onClick={toggleListening}
+        aria-label="Record"
+        disabled={!hasRecognition}
+      >
+        <Mic className="h-4 w-4" />
+      </Button>
+    ) : (
+      <Button
+        type="button"
+        size="icon-lg"
+        className="rounded-full bg-black text-white shadow-sm hover:bg-black/90"
+        onClick={handleSubmit}
+        aria-label="Go"
+      >
+        <ArrowUp className="h-4 w-4" />
+      </Button>
+    );
 
   const toggleListening = useCallback(() => {
     if (!hasRecognition) return;
@@ -212,18 +291,22 @@ function HomeSearchInputContent() {
   }, []);
 
   const getAppIcon = () => {
+    if (variant === "mobile" && isSearch) {
+      return <Globe size={16} />;
+    }
     switch (selectedApp) {
       case "youtube": return <Youtube size={16} />;
-      case "maps": return <Map size={16} />;
-      case "shopping": return <AudioLines size={16} />;
+      case "shopping": return <ShoppingBag size={16} />;
       default: return <Grid size={16} />;
     }
   };
 
   const getAppLabel = () => {
+    if (variant === "mobile" && isSearch) {
+      return "Search";
+    }
     switch (selectedApp) {
       case "youtube": return "YouTube";
-      case "maps": return "Maps";
       case "shopping": return "Shopping";
       default: return "Apps";
     }
@@ -231,24 +314,51 @@ function HomeSearchInputContent() {
 
   return (
     <div className="w-full max-w-3xl">
-      <div className="rounded-2xl border border-border/60 bg-white shadow-sm">
+      {variant === "mobile" && (
+        <div className="mb-3 px-1">
+          <Suggestions>
+            {suggestions.map((s) => (
+              <Suggestion
+                key={s}
+                suggestion={s}
+                onClick={handleSuggestionClick}
+              />
+            ))}
+          </Suggestions>
+        </div>
+      )}
+      <div className="rounded-2xl border border-border/60 bg-white/70 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/50">
         <div className="flex items-center gap-3 px-4 pt-4">
           <Search className="h-5 w-5 text-muted-foreground" />
-          <input
-            value={input}
-            onChange={(e) => {
-              inputValueRef.current = e.target.value;
-              setInput(e.target.value);
-            }}
-            placeholder="What would you like to know?"
-            className="w-full bg-transparent text-base outline-none placeholder:text-muted-foreground"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                const next = (e.currentTarget.value || "").trim();
-                if (next) submitText(next);
-              }
-            }}
-          />
+          <div className="flex items-center gap-3 w-full">
+            <div className="relative flex-1">
+              <input
+                value={input}
+                onChange={(e) => {
+                  inputValueRef.current = e.target.value;
+                  setInput(e.target.value);
+                }}
+                className="w-full bg-transparent text-base outline-none"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const next = (e.currentTarget.value || "").trim();
+                    if (next) submitText(next);
+                  }
+                }}
+              />
+              {input.length === 0 && (
+                <span
+                  className={cn(
+                    "pointer-events-none absolute inset-y-0 left-0 flex items-center text-base text-muted-foreground transition-opacity duration-300",
+                    placeholderFadingOut ? "opacity-0" : "opacity-100"
+                  )}
+                >
+                  {placeholderText}
+                </span>
+              )}
+            </div>
+            {variant === "mobile" && renderActionButton()}
+          </div>
         </div>
 
         <PromptInputAttachments className="px-4 pt-3">
@@ -270,32 +380,66 @@ function HomeSearchInputContent() {
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button type="button" variant="ghost" size="sm" className="h-8 gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    "h-8 gap-2",
+                    (selectedApp !== "apps" ||
+                      (variant === "mobile" && isSearch)) &&
+                      "text-blue-500"
+                  )}
+                >
                   {getAppIcon()}
                   <span>{getAppLabel()}</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent side="top" align="center">
-                <DropdownMenuItem onClick={() => setSelectedApp("youtube")}>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSelectedApp("apps");
+                    setIsSearch(true);
+                  }}
+                  className={cn(isSearch && "text-blue-500")}
+                >
+                  <Globe className="mr-2 h-4 w-4" />
+                  <span>Search</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSelectedApp("youtube");
+                    setIsSearch(false);
+                  }}
+                  className={cn(selectedApp === "youtube" && "text-blue-500")}
+                >
                   <Youtube className="mr-2 h-4 w-4" />
                   <span>YouTube</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setSelectedApp("maps")}>
-                  <Map className="mr-2 h-4 w-4" />
-                  <span>Maps</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setSelectedApp("shopping")}>
-                  <AudioLines className="mr-2 h-4 w-4" />
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSelectedApp("shopping");
+                    setIsSearch(false);
+                  }}
+                  className={cn(selectedApp === "shopping" && "text-blue-500")}
+                >
+                  <ShoppingBag className="mr-2 h-4 w-4" />
                   <span>Shopping</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setSelectedApp("apps")}>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSelectedApp("apps");
+                    setIsSearch(false);
+                  }}
+                  className={cn(selectedApp === "apps" && !isSearch && "text-blue-500")}
+                >
                   <Grid className="mr-2 h-4 w-4" />
                   <span>No Apps</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
 
-            {selectedApp === "apps" && (
+            {variant === "desktop" && selectedApp === "apps" && (
               <Button
                 type="button"
                 variant="ghost"
@@ -309,32 +453,7 @@ function HomeSearchInputContent() {
             )}
           </div>
 
-          {input.trim().length === 0 ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="icon-lg"
-              className={cn(
-                "rounded-full",
-                isListening && "animate-pulse bg-accent text-accent-foreground border-transparent"
-              )}
-              onClick={toggleListening}
-              aria-label="Record"
-              disabled={!hasRecognition}
-            >
-              <Mic className="h-4 w-4" />
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              size="icon-lg"
-              className="rounded-full bg-black text-white shadow-sm hover:bg-black/90"
-              onClick={handleSubmit}
-              aria-label="Go"
-            >
-              <ArrowUp className="h-4 w-4" />
-            </Button>
-          )}
+          {variant === "desktop" && renderActionButton()}
         </div>
       </div>
       <input
