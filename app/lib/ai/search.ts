@@ -23,6 +23,101 @@ type WebItemSummary = {
   snippet?: string;
 };
 
+async function webSearchViaSerpApi(query: string, options: WebSearchOptions = {}): Promise<RawItem[]> {
+  const trimmed = (query ?? "").trim();
+  if (!trimmed) return [];
+
+  const apiKey = process.env.SERPAPI_API_KEY;
+  if (!apiKey) {
+    console.warn("[ai:webSearch] Missing SERPAPI_API_KEY for SerpAPI fallback");
+    return [];
+  }
+
+  const requestedNum = typeof options.num === "number" ? options.num : 10;
+  const num = Math.min(Math.max(requestedNum, 1), 10);
+
+  const params = new URLSearchParams();
+  params.set("engine", "google");
+  params.set("q", trimmed);
+  params.set("api_key", apiKey);
+  params.set("num", String(num));
+
+  const url = `https://serpapi.com/search.json?${params.toString()}`;
+
+  try {
+    const res = await fetch(url, { next: { revalidate: 120 } });
+    if (!res.ok) {
+      console.warn("[ai:webSearch] SerpAPI web error", res.status, res.statusText);
+      return [];
+    }
+    const json: any = await res.json();
+    const items: any[] = Array.isArray(json.organic_results) ? json.organic_results : [];
+    return items.slice(0, num).map((item: any): RawItem => ({
+      link: String(item.link || item.formattedUrl || "").trim(),
+      title: String(item.title || item.name || "").trim(),
+      snippet:
+        typeof item.snippet === "string"
+          ? item.snippet
+          : Array.isArray(item.snippet_highlighted_words)
+          ? item.snippet_highlighted_words.join(" ")
+          : "",
+      imageUrl:
+        (item.thumbnail && String(item.thumbnail).trim()) ||
+        (item.rich_snippet && item.rich_snippet.top && item.rich_snippet.top.thumbnail && String(item.rich_snippet.top.thumbnail).trim()) ||
+        undefined,
+    })).filter((it) => Boolean(it.link) && Boolean(it.title));
+  } catch (err) {
+    console.warn("[ai:webSearch] SerpAPI web exception", err);
+    return [];
+  }
+}
+
+async function imageSearchViaSerpApi(
+  query: string,
+  options: ImageSearchOptions = {}
+): Promise<{ src: string; alt?: string }[]> {
+  const trimmed = (query ?? "").trim();
+  if (!trimmed) return [];
+
+  const apiKey = process.env.SERPAPI_API_KEY;
+  if (!apiKey) {
+    console.warn("[ai:imageSearch] Missing SERPAPI_API_KEY for SerpAPI fallback");
+    return [];
+  }
+
+  const requestedNum = typeof options.num === "number" ? options.num : 10;
+  const num = Math.min(Math.max(requestedNum, 1), 10);
+
+  const params = new URLSearchParams();
+  params.set("engine", "google");
+  params.set("q", trimmed);
+  params.set("tbm", "isch");
+  params.set("ijn", "0");
+  params.set("api_key", apiKey);
+
+  const url = `https://serpapi.com/search.json?${params.toString()}`;
+
+  try {
+    const res = await fetch(url, { next: { revalidate: 120 } });
+    if (!res.ok) {
+      console.warn("[ai:imageSearch] SerpAPI image error", res.status, res.statusText);
+      return [];
+    }
+    const json: any = await res.json();
+    const items: any[] = Array.isArray(json.images_results) ? json.images_results : [];
+    return items
+      .slice(0, num)
+      .map((item: any) => ({
+        src: String(item.original || item.thumbnail || item.link || "").trim(),
+        alt: item.title || item.alt || "",
+      }))
+      .filter((i) => Boolean(i.src));
+  } catch (err) {
+    console.warn("[ai:imageSearch] SerpAPI image exception", err);
+    return [];
+  }
+}
+
 function extractJson(s: string) {
   const start = s.indexOf("{");
   const end = s.lastIndexOf("}");
@@ -44,8 +139,8 @@ export async function webSearch(query: string, options: WebSearchOptions = {}): 
   const cxEnv = process.env.GOOGLE_CX || process.env.GOOGLE_CSE_ID;
   const cx = options.cx || cxEnv;
   if (!apiKey || !cx) {
-    console.error("[ai:webSearch] Missing GOOGLE_API_KEY or GOOGLE_CX");
-    return [];
+    console.warn("[ai:webSearch] Missing GOOGLE_API_KEY or GOOGLE_CX, using SerpAPI fallback if available");
+    return webSearchViaSerpApi(trimmed, options);
   }
 
   const requestedNum = typeof options.num === "number" ? options.num : 10;
@@ -60,8 +155,8 @@ export async function webSearch(query: string, options: WebSearchOptions = {}): 
   try {
     const res = await fetch(url.toString(), { next: { revalidate: 120 } });
     if (!res.ok) {
-      console.error("[ai:webSearch] Non-OK response", res.status, res.statusText);
-      return [];
+      console.warn("[ai:webSearch] Non-OK response", res.status, res.statusText, "– using SerpAPI fallback if available");
+      return webSearchViaSerpApi(trimmed, options);
     }
     const json = await res.json();
     const items = Array.isArray(json.items) ? json.items : [];
@@ -73,8 +168,8 @@ export async function webSearch(query: string, options: WebSearchOptions = {}): 
     }));
     return rawItems;
   } catch (err) {
-    console.error("[ai:webSearch] Error calling Custom Search API", err);
-    return [];
+    console.warn("[ai:webSearch] Error calling Custom Search API", err, "– using SerpAPI fallback if available");
+    return webSearchViaSerpApi(trimmed, options);
   }
 }
 
@@ -89,8 +184,8 @@ export async function imageSearch(
   const cxEnv = process.env.GOOGLE_CX || process.env.GOOGLE_CSE_ID;
   const cx = options.cx || cxEnv;
   if (!apiKey || !cx) {
-    console.error("[ai:imageSearch] Missing GOOGLE_API_KEY or GOOGLE_CX");
-    return [];
+    console.warn("[ai:imageSearch] Missing GOOGLE_API_KEY or GOOGLE_CX, using SerpAPI fallback if available");
+    return imageSearchViaSerpApi(trimmed, options);
   }
 
   const requestedNum = typeof options.num === "number" ? options.num : 10;
@@ -108,8 +203,8 @@ export async function imageSearch(
   try {
     const res = await fetch(url.toString(), { next: { revalidate: 120 } });
     if (!res.ok) {
-      console.error("[ai:imageSearch] Non-OK response", res.status, res.statusText);
-      return [];
+      console.warn("[ai:imageSearch] Non-OK response", res.status, res.statusText, "– using SerpAPI fallback if available");
+      return imageSearchViaSerpApi(trimmed, options);
     }
     const json = await res.json();
     const items = Array.isArray(json.items) ? json.items : [];
@@ -128,8 +223,8 @@ export async function imageSearch(
       .filter((i) => Boolean(i.src));
     return mapped;
   } catch (err) {
-    console.error("[ai:imageSearch] Error calling Custom Search API", err);
-    return [];
+    console.warn("[ai:imageSearch] Error calling Custom Search API", err, "– using SerpAPI fallback if available");
+    return imageSearchViaSerpApi(trimmed, options);
   }
 }
 

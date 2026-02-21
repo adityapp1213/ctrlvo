@@ -178,6 +178,7 @@ const LocalHistory = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
   const deleteChat = useMutation(api.chat.deleteChat);
+  const { setOpen } = useSidebar();
 
   const userId = user?.id ?? null;
   const chats = useQuery(
@@ -200,35 +201,53 @@ const LocalHistory = () => {
     }
   };
 
+  const activeChatId = searchParams.get("chatId");
+
   if (!chats || !chats.length) return null;
 
   return (
     <div className="flex flex-col gap-2 mb-4">
       <ul className="space-y-1">
-        {chats.map((item: any) => (
-          <li key={item.sessionId} className="group relative">
-            <Link
-              href={`/home/search?chatId=${encodeURIComponent(item.sessionId)}`}
-              className="block rounded-md border border-neutral-200 dark:border-neutral-700 px-2 py-1.5 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-            >
-              <div className="flex justify-between gap-2 pr-6">
-                <span className="font-medium truncate">
-                  {item.name || item.title || "New chat"}
-                </span>
-              </div>
-              <div className="mt-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
-                {new Date(item.updatedAt || item.createdAt).toLocaleTimeString()}
-              </div>
-            </Link>
-            <button
-              onClick={(e) => handleDelete(e, item.sessionId)}
-              className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 p-1 text-neutral-400 hover:text-red-500 transition-all"
-              aria-label="Delete chat"
-            >
-              <Trash2 className="w-3 h-3" />
-            </button>
-          </li>
-        ))}
+        {chats.map((item: any) => {
+          const isActive = activeChatId === item.sessionId;
+          return (
+            <li key={item.sessionId} className="group relative">
+              {isActive && (
+                <span className="absolute left-2 top-2 h-2 w-2 rounded-full bg-red-500" />
+              )}
+              <Link
+                href={`/home/search?chatId=${encodeURIComponent(item.sessionId)}`}
+                className={cn(
+                  "block rounded-md border border-neutral-200 dark:border-neutral-700 py-1.5 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors",
+                  isActive
+                    ? "bg-neutral-100 dark:bg-neutral-800 pl-5 pr-2"
+                    : "px-2"
+                )}
+                onClick={() => {
+                  if (typeof window !== "undefined" && window.innerWidth < 768) {
+                    setOpen(false);
+                  }
+                }}
+              >
+                <div className="flex justify-between gap-2 pr-6">
+                  <span className="font-medium truncate">
+                    {item.name || item.title || "New chat"}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
+                  {new Date(item.updatedAt || item.createdAt).toLocaleTimeString()}
+                </div>
+              </Link>
+              <button
+                onClick={(e) => handleDelete(e, item.sessionId)}
+                className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 p-1 text-neutral-400 hover:text-red-500 transition-all"
+                aria-label="Delete chat"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

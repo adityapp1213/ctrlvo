@@ -148,16 +148,14 @@ export default async function SearchPage({
   // Determine active tab - prioritize videos if we have youtube items and no explicit tab
   const activeTab = resolvedSearchParams?.tab ? tab : (mapLocation ? "map" : (youtubeItems.length > 0 ? "videos" : tab));
 
-  const effectiveWebQuery = shoppingItems.length > 0 ? null : (webSearchQuery ?? searchQuery);
-
   const shouldPrefetchTabs =
     hasQuery &&
     shouldShowTabs &&
     !isWeatherQuery &&
     youtubeItems.length === 0 &&
-    Boolean(effectiveWebQuery);
+    Boolean(webSearchQuery);
 
-  const webQuery = effectiveWebQuery;
+  const webQuery = webSearchQuery ?? null;
 
   if (shouldPrefetchTabs && webQuery) {
     const [rawItems, images] = await Promise.all([

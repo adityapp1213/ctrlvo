@@ -62,6 +62,32 @@ function extractShoppingQuery(q: string): string | null {
   return null;
 }
 
+function extractExplicitSearchQuery(q: string): string | null {
+  const trimmed = (q || "").trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+
+  const direct = trimmed.match(/^(search|search for)\s+(.+)/i);
+  if (direct && direct[2]) {
+    const candidate = direct[2].trim();
+    if (candidate) return candidate;
+  }
+
+  const idxFor = lower.indexOf("search for ");
+  if (idxFor >= 0) {
+    const candidate = trimmed.slice(idxFor + "search for ".length).trim();
+    if (candidate) return candidate;
+  }
+
+  const idx = lower.indexOf("search ");
+  if (idx >= 0) {
+    const candidate = trimmed.slice(idx + "search ".length).trim();
+    if (candidate) return candidate;
+  }
+
+  return null;
+}
+
 export type DynamicSearchResult = {
   type: "text" | "search";
   content?: string;
@@ -208,6 +234,7 @@ export async function performDynamicSearch(
   if (!trimmed) return { type: "text", content: "" };
 
   const explicitShoppingQuery = extractShoppingQuery(trimmed);
+  const explicitSearchQuery = extractExplicitSearchQuery(trimmed);
   const shoppingLocation = (options?.shoppingLocation || "").trim() || null;
 
   const jar = await cookies();
@@ -216,6 +243,7 @@ export async function performDynamicSearch(
   const baseContext = options?.context ?? [];
 
   let askCloudyContext: any = null;
+  let conversationContext: any = null;
   if (Array.isArray(baseContext)) {
     const marker = baseContext.find(
       (c) => typeof c === "string" && c.trim().startsWith("AskCloudyContext:")
@@ -226,6 +254,17 @@ export async function performDynamicSearch(
         askCloudyContext = JSON.parse(raw);
       } catch {
         askCloudyContext = null;
+      }
+    }
+    const convMarker = baseContext.find(
+      (c) => typeof c === "string" && c.trim().startsWith("ConversationContext:")
+    );
+    if (convMarker) {
+      const raw = convMarker.replace(/^ConversationContext:\s*/i, "");
+      try {
+        conversationContext = JSON.parse(raw);
+      } catch {
+        conversationContext = null;
       }
     }
   }
@@ -257,12 +296,27 @@ export async function performDynamicSearch(
 
   const combinedContext = [...baseContext, ...memContext];
 
-  const detectQuery = explicitShoppingQuery || trimmed;
+  const lastSearchQueryFromContext: string | null =
+    typeof conversationContext?.latest_search?.searchQuery === "string"
+      ? conversationContext.latest_search.searchQuery
+      : null;
+
+  let resolvedExplicitSearchQuery = explicitSearchQuery;
+  if (explicitSearchQuery && lastSearchQueryFromContext) {
+    const norm = explicitSearchQuery.toLowerCase().replace(/\s+/g, " ").trim();
+    if (norm === "it" || norm === "it up" || norm === "it again" || norm === "this" || norm === "that") {
+      resolvedExplicitSearchQuery = lastSearchQueryFromContext;
+    }
+  }
+
+  const detectQuery = explicitShoppingQuery || resolvedExplicitSearchQuery || trimmed;
   const intent = await detectIntent(detectQuery, combinedContext, aiProvider);
 
   const shoppingQuery = intent.shoppingQuery || explicitShoppingQuery || null;
+  const forceSearchTabs = Boolean(resolvedExplicitSearchQuery);
+  const shouldShowTabs = intent.shouldShowTabs || forceSearchTabs;
 
-  if (!intent.shouldShowTabs && !shoppingQuery) {
+  if (!shouldShowTabs && !shoppingQuery) {
     const raw = intent.overallSummaryLines;
     const lines = Array.isArray(raw) ? raw.filter(Boolean) : [];
     const content = lines.length > 0 ? lines.join(" ") : "Cloudy could not generate a summary for this query.";
@@ -292,6 +346,9 @@ export async function performDynamicSearch(
     searchQuery = shoppingQuery;
     webQuery = null;
   }
+  if (!intent.searchQuery && resolvedExplicitSearchQuery) {
+    searchQuery = resolvedExplicitSearchQuery;
+  }
   if (isAskCloudy) {
     const selected = (askCloudyContext && (askCloudyContext as any).selected) || null;
     const link =
@@ -315,22 +372,20 @@ export async function performDynamicSearch(
       }
     }
   }
-  if (isAskCloudy && !webQuery && intent.shouldShowTabs) {
+  if (!webQuery && shouldShowTabs && !shoppingQuery) {
     webQuery = searchQuery;
   }
   let overallSummaryLines = intent.overallSummaryLines;
 
-  const effectiveWebQuery = shoppingQuery ? null : (webQuery || searchQuery);
-
   const [rawWebItems, mediaItems, weatherItems, youtubeItems, shoppingItems] = await Promise.all([
-    effectiveWebQuery ? webSearch(effectiveWebQuery) : Promise.resolve([]),
-    effectiveWebQuery ? imageSearch(effectiveWebQuery) : Promise.resolve([]),
+    webQuery ? webSearch(searchQuery) : Promise.resolve([]),
+    webQuery ? imageSearch(searchQuery) : Promise.resolve([]),
     (async () => {
-      if (!effectiveWebQuery) return [];
-      const lower = effectiveWebQuery.toLowerCase();
+      if (!webQuery) return [];
+      const lower = searchQuery.toLowerCase();
       const isWeather = /(weather|forecast|temperature|rain|snow|thunder|wind|humidity)\b/.test(lower);
       if (isWeather) {
-        const locs = extractLocationsFromQuery(effectiveWebQuery);
+        const locs = extractLocationsFromQuery(searchQuery);
         if (locs.length) {
           return Promise.all(locs.map((city) => fetchWeatherForCity(city)));
         }

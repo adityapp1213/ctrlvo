@@ -2277,15 +2277,7 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
             <div className="w-full max-w-3xl mx-auto">
               <HomeSearchInput
                 onSubmitOverride={(value, meta) => {
-                  const q = (value || "").trim();
-                  if (!q) return;
-                  const params = new URLSearchParams();
-                  params.set("q", q);
-                  params.set("tab", "results");
-                  if (meta?.source === "voice") {
-                    params.set("voice", "1");
-                  }
-                  router.push(`/home/search?${params.toString()}`);
+                  handleChatSubmit(value, meta);
                 }}
               />
             </div>
@@ -2297,15 +2289,7 @@ export function SearchConversationShell(props: SearchConversationShellProps) {
               <HomeSearchInput
                 variant="mobile"
                 onSubmitOverride={(value, meta) => {
-                  const q = (value || "").trim();
-                  if (!q) return;
-                  const params = new URLSearchParams();
-                  params.set("q", q);
-                  params.set("tab", "results");
-                  if (meta?.source === "voice") {
-                    params.set("voice", "1");
-                  }
-                  router.push(`/home/search?${params.toString()}`);
+                  handleChatSubmit(value, meta);
                 }}
               />
             </div>
