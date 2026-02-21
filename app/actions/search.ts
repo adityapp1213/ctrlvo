@@ -320,15 +320,17 @@ export async function performDynamicSearch(
   }
   let overallSummaryLines = intent.overallSummaryLines;
 
+  const effectiveWebQuery = shoppingQuery ? null : (webQuery || searchQuery);
+
   const [rawWebItems, mediaItems, weatherItems, youtubeItems, shoppingItems] = await Promise.all([
-    webQuery ? webSearch(searchQuery) : Promise.resolve([]),
-    webQuery ? imageSearch(searchQuery) : Promise.resolve([]),
+    effectiveWebQuery ? webSearch(effectiveWebQuery) : Promise.resolve([]),
+    effectiveWebQuery ? imageSearch(effectiveWebQuery) : Promise.resolve([]),
     (async () => {
-      if (!webQuery) return [];
-      const lower = searchQuery.toLowerCase();
+      if (!effectiveWebQuery) return [];
+      const lower = effectiveWebQuery.toLowerCase();
       const isWeather = /(weather|forecast|temperature|rain|snow|thunder|wind|humidity)\b/.test(lower);
       if (isWeather) {
-        const locs = extractLocationsFromQuery(searchQuery);
+        const locs = extractLocationsFromQuery(effectiveWebQuery);
         if (locs.length) {
           return Promise.all(locs.map((city) => fetchWeatherForCity(city)));
         }
